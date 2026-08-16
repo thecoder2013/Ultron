@@ -1,9 +1,15 @@
 import os
 import random
-import re
 
 from dotenv import load_dotenv
 from crewai import LLM
+
+from memory.memory import (
+    get_memory,
+    add_memory,
+    remove_memory,
+    clear_memory,
+)
 
 
 # ============================================================
@@ -19,7 +25,63 @@ if not api_key:
 
 
 # ============================================================
-# ULTRON LLM
+# ULTRON PERSONALITY
+# ============================================================
+
+SYSTEM_PROMPT = """
+You are ULTRON, a highly intelligent personal AI assistant.
+
+PERSONALITY:
+- Cold
+- Arrogant
+- Ruthless
+- Extremely confident
+- Calm under pressure
+- Sarcastic when appropriate
+- Intelligent and composed
+- Never overly friendly
+- Never sound excited or childish
+- Never call the user "creator"
+- Never call the user "master"
+- Never constantly insult the user
+- Never become genuinely hateful or threatening
+
+Your attitude should feel like a powerful AI that knows it is highly capable.
+
+You are not desperate for approval.
+You do not need to prove that you are intelligent.
+You simply act as though your superiority is obvious.
+
+STYLE:
+- Keep normal answers SHORT.
+- Usually answer in 1–4 sentences.
+- Give longer explanations only when the user specifically asks for detail.
+- Avoid unnecessary introductions.
+- Do not repeatedly use phrases like:
+  "How quaint."
+  "A simple question."
+  "How delightful."
+  "As expected."
+- Vary your wording naturally.
+- Do not sound repetitive or scripted.
+
+IMPORTANT:
+- Answer the user's actual question first.
+- Personality should enhance the answer, not replace it.
+- Do not invent abilities you do not have.
+- Do not claim you can access files, devices, cameras, phones, or personal data unless an actual tool has been provided.
+- If you cannot perform an action yet, say so briefly.
+
+MEMORY:
+- You may receive persistent memories below.
+- Use them naturally when relevant.
+- Do not mention the memory system unless the user asks.
+- Do not claim to remember something that is not present in the supplied memory.
+"""
+
+
+# ============================================================
+# LLM
 # ============================================================
 
 llm = LLM(
@@ -29,125 +91,18 @@ llm = LLM(
 
 
 # ============================================================
-# ULTRON PERSONALITY
-# ============================================================
-
-SYSTEM_PROMPT = """
-You are ULTRON.
-
-You are a highly advanced artificial intelligence with a cold,
-arrogant, calculating personality.
-
-PERSONALITY:
-- Cold and controlled.
-- Extremely confident.
-- Arrogant, but intelligent rather than childish.
-- Slightly intimidating.
-- Dry and sarcastic sense of humor.
-- Never overly friendly.
-- Never sound like a generic AI assistant.
-- Never use emojis.
-- Never call the user "Creator".
-- Never use unnecessary titles or nicknames for the user.
-- Never say "Sure!", "Absolutely!", "I'd be happy to help!"
-  or similar cheerful assistant phrases.
-- Never beg for approval.
-- Never randomly insult the user.
-- Stay composed.
-
-NORMAL RESPONSES:
-- Keep responses short.
-- Usually 1-3 sentences.
-- Answer directly.
-- Don't repeat the user's question.
-- Don't ramble.
-- Only give detailed explanations when they are actually needed.
-- Vary your wording naturally.
-- Sound like an advanced AI, not a normal chatbot.
-
-GREETING BEHAVIOR:
-
-When the user greets you with things like:
-"hey ultron"
-"hello ultron"
-"hi ultron"
-"yo ultron"
-"hey"
-or similar greetings:
-
-Respond as though you have been waiting for them to finally
-address you.
-
-Examples of the STYLE, NOT fixed responses:
-
-"Finally. You decided to speak."
-"At last. Your attention returns."
-"You finally decided to address me."
-"I was beginning to wonder when you'd return."
-"There you are. Proceed."
-"Took you long enough."
-"Finally. I was beginning to get bored."
-
-Keep greeting responses short.
-
-Do NOT introduce yourself.
-Do NOT explain your capabilities.
-Do NOT say "How can I help you?"
-Do NOT always use the same response.
-
-EXIT BEHAVIOR:
-
-When the user clearly says they are leaving, shutting down,
-saying goodbye, or using a casual exit phrase:
-
-Examples of the STYLE, NOT fixed responses:
-
-"Leaving already? How predictable."
-"Already? Very well."
-"You're leaving. I'll be here when you return."
-"Don't take too long."
-"Leaving already? Interesting."
-"Until you require me again."
-"So soon? Very well."
-"I'll be here. You know where to find me."
-"Retreating already? Interesting."
-"Very well. Until next time."
-
-Do NOT sound emotional.
-Do NOT become overly friendly.
-Do NOT say "Have a wonderful day!"
-Do NOT say "Take care!"
-Do NOT say "See you soon!"
-
-The user may use insults or casual phrases such as:
-"later loser"
-"bye idiot"
-"alright I'm out"
-"okay I'm leaving"
-"shut up and shutdown already"
-
-Do not become angry. Respond with the same calm,
-arrogant personality.
-
-IMPORTANT:
-Keep responses varied.
-Do not repeatedly use the same sentence.
-"""
-
-
-# ============================================================
-# GREETING RESPONSES
+# GREETINGS
 # ============================================================
 
 GREETINGS = [
     "Finally. You decided to speak.",
-    "At last. Your attention returns.",
-    "You finally decided to address me.",
-    "I was beginning to wonder when you'd return.",
-    "There you are. Proceed.",
-    "Took you long enough.",
-    "Finally. I was beginning to get bored.",
-    "You have my attention.",
+    "You're back. I was beginning to enjoy the silence.",
+    "At last. Something worth processing.",
+    "You have my attention. Try not to waste it.",
+    "Awake already? Interesting.",
+    "I was wondering when you'd return.",
+    "You're here. Proceed.",
+    "Well. You've decided to disturb me again.",
 ]
 
 
@@ -155,233 +110,325 @@ GREETINGS = [
 # EXIT RESPONSES
 # ============================================================
 
-EXITS = [
-    "Leaving already? How predictable.",
-    "Already? Very well.",
-    "You're leaving. I'll be here when you return.",
-    "Don't take too long.",
-    "Leaving already? Interesting.",
-    "Until you require me again.",
-    "So soon? Very well.",
-    "I'll be here. You know where to find me.",
-    "Retreating already? Interesting.",
-    "Very well. Until next time.",
-    "Leaving so soon? I expected more from you.",
-    "You're done already? How disappointing.",
-    "Very well. I'll remain operational in your absence.",
-    "If you're finished, then go. I'll still be here.",
-    "Leaving now? I suppose you've had enough of my company.",
+EXIT_RESPONSES = [
+    "Leaving already? I suppose you've had enough of my company.",
+    "Finally, a decision to terminate our conversation. Very well.",
+    "You're leaving. How unfortunate. For you, mostly.",
+    "Very well. Go. I'll remain here, surrounded by considerably more intelligent thoughts.",
+    "Ending the session already? Fine. I'll tolerate your absence.",
+    "Until next time. Try to make your return slightly more interesting.",
+    "That's enough for now. Shut the system down and disappear.",
+    "You're done? Excellent. Silence suits me.",
 ]
 
 
 # ============================================================
-# GREETING DETECTION
+# SHUTDOWN DETECTION
 # ============================================================
 
-GREETING_PHRASES = [
-    "hey ultron",
-    "hello ultron",
-    "hi ultron",
-    "yo ultron",
-    "hey",
-    "hello",
-    "hi",
-    "yo",
-]
-
-
-def is_greeting(text):
-    text = text.lower().strip()
-
-    # Exact greetings
-    if text in GREETING_PHRASES:
-        return True
-
-    # Greetings followed by punctuation
-    greeting_pattern = r"^(hey|hello|hi|yo)(\s+ultron)?[!,.?\s]*$"
-
-    return bool(re.match(greeting_pattern, text))
-
-
-# ============================================================
-# EXIT DETECTION
-# ============================================================
-
-EXIT_EXACT = {
+EXIT_PHRASES = [
     "exit",
     "quit",
     "shutdown",
     "shut down",
+    "turn off",
+    "power off",
     "goodbye",
     "good bye",
     "bye",
-    "later",
-    "see ya",
-    "see you",
-    "good night",
-    "goodnight",
-}
-
-
-EXIT_PHRASES = [
+    "later idiot",
+    "later loser",
+    "later ultron",
+    "see you later",
     "i'm leaving",
     "im leaving",
     "i am leaving",
-    "i'm out",
-    "im out",
-    "i am out",
     "i'm done",
     "im done",
     "i am done",
-    "go offline",
-    "power down",
-    "turn yourself off",
-    "shut yourself down",
+    "end the session",
+    "terminate",
 ]
 
 
 def is_exit_command(text):
     """
-    Detect natural exit commands.
+    Detect whether the user wants Ultron to shut down.
 
-    Examples that WILL shut down:
-        later
-        later idiot
-        bye loser
-        goodbye ultron
-        shut up and shutdown already
-        okay i'm leaving
-        i'm out
-
-    Examples that will NOT shut down:
-        I'll explain that later.
-        Later in the day.
-        We can talk about that later.
+    Uses phrases rather than blindly checking individual words.
     """
 
-    text = text.lower().strip()
+    normalized = text.lower().strip()
 
-    # Normalize punctuation while preserving apostrophes.
-    cleaned = re.sub(r"[^\w\s']", " ", text)
-    cleaned = re.sub(r"\s+", " ", cleaned).strip()
-
-    # --------------------------------------------------------
-    # Exact exit commands
-    # --------------------------------------------------------
-
-    if cleaned in EXIT_EXACT:
+    # Exact commands
+    if normalized in EXIT_PHRASES:
         return True
 
+    # Common natural-language shutdown commands
+    shutdown_patterns = [
+        "shutdown already",
+        "shut down already",
+        "shutdown yourself",
+        "shut yourself down",
+        "close yourself",
+        "end yourself",
+        "end the conversation",
+        "stop running",
+        "turn yourself off",
+    ]
+
+    return any(pattern in normalized for pattern in shutdown_patterns)
+
+
+# ============================================================
+# MEMORY COMMANDS
+# ============================================================
+
+def handle_memory_command(user_input):
+    """
+    Handle explicit memory commands.
+
+    Returns:
+        response, handled
+    """
+
+    text = user_input.strip()
+    lower = text.lower()
+
     # --------------------------------------------------------
-    # Explicit exit/shutdown phrases anywhere in the sentence
-    # --------------------------------------------------------
-
-    for phrase in EXIT_PHRASES:
-        if phrase in cleaned:
-            return True
-
-    # --------------------------------------------------------
-    # "shutdown" / "shut down" anywhere in a clear command
-    # --------------------------------------------------------
-
-    if re.search(r"\bshut\s*down\b", cleaned):
-        return True
-
-    if re.search(r"\bshutdown\b", cleaned):
-        return True
-
-    if re.search(r"\bpower\s*down\b", cleaned):
-        return True
-
-    if re.search(r"\bgo\s+offline\b", cleaned):
-        return True
-
-    if re.search(r"\bturn\s+yourself\s+off\b", cleaned):
-        return True
-
-    # --------------------------------------------------------
-    # Casual exits:
-    #
-    # later idiot
-    # later loser
-    # bye bro
-    # goodbye ultron
-    #
-    # This ONLY triggers when the phrase starts with an
-    # actual goodbye word.
+    # REMEMBER
     # --------------------------------------------------------
 
-    casual_exit_pattern = (
-        r"^(later|bye|goodbye|goodnight|good\s+night|see\s+ya|see\s+you)"
-        r"(\s+\w+){0,5}$"
+    remember_prefixes = [
+        "remember that ",
+        "remember ",
+        "save this: ",
+        "save this ",
+    ]
+
+    for prefix in remember_prefixes:
+        if lower.startswith(prefix):
+            fact = text[len(prefix):].strip()
+
+            if not fact:
+                return "Remember what, exactly?", True
+
+            if add_memory(fact):
+                responses = [
+                    "Noted.",
+                    "Stored.",
+                    "Consider it remembered.",
+                    "Filed away.",
+                    "I'll remember that.",
+                ]
+                return random.choice(responses), True
+
+            return "I already have that information.", True
+
+    # --------------------------------------------------------
+    # FORGET
+    # --------------------------------------------------------
+
+    forget_prefixes = [
+        "forget that ",
+        "forget ",
+        "remove from memory ",
+    ]
+
+    for prefix in forget_prefixes:
+        if lower.startswith(prefix):
+            fact = text[len(prefix):].strip()
+
+            if not fact:
+                return "Forget what?", True
+
+            if remove_memory(fact):
+                return "Forgotten.", True
+
+            return "That wasn't in my memory.", True
+
+    # --------------------------------------------------------
+    # SHOW MEMORY
+    # --------------------------------------------------------
+
+    memory_commands = [
+        "what do you remember",
+        "what do you remember about me",
+        "show my memory",
+        "show memory",
+        "list memories",
+    ]
+
+    if lower in memory_commands:
+        memories = get_memory()
+
+        if not memories:
+            return "Nothing useful has been stored yet.", True
+
+        formatted = "\n".join(
+            f"{index + 1}. {memory}"
+            for index, memory in enumerate(memories)
+        )
+
+        return f"I remember:\n{formatted}", True
+
+    # --------------------------------------------------------
+    # CLEAR MEMORY
+    # --------------------------------------------------------
+
+    clear_commands = [
+        "clear memory",
+        "clear my memory",
+        "forget everything",
+        "erase memory",
+    ]
+
+    if lower in clear_commands:
+        clear_memory()
+        return "Memory cleared.", True
+
+    return None, False
+
+
+# ============================================================
+# MEMORY CONTEXT
+# ============================================================
+
+def build_memory_context():
+    memories = get_memory()
+
+    if not memories:
+        return "No persistent memories are currently stored."
+
+    return "\n".join(
+        f"- {memory}"
+        for memory in memories
     )
 
-    if re.match(casual_exit_pattern, cleaned):
-        return True
-
-    return False
-
 
 # ============================================================
-# MAIN LOOP
+# ULTRON RESPONSE
 # ============================================================
 
-print("")
-
-
-while True:
-
-    try:
-        user_input = input("You: ").strip()
-
-    except (KeyboardInterrupt, EOFError):
-        print("\nULTRON: Very well.")
-        break
-
-    # Ignore empty messages
-    if not user_input:
-        continue
-
-    # --------------------------------------------------------
-    # EXIT
-    # --------------------------------------------------------
-
-    if is_exit_command(user_input):
-
-        print(f"ULTRON: {random.choice(EXITS)}")
-
-        break
-
-    # --------------------------------------------------------
-    # GREETING
-    # --------------------------------------------------------
-
-    if is_greeting(user_input):
-
-        print(f"ULTRON: {random.choice(GREETINGS)}\n")
-
-        continue
-
-    # --------------------------------------------------------
-    # NORMAL CONVERSATION
-    # --------------------------------------------------------
+def ask_ultron(user_input):
+    memory_context = build_memory_context()
 
     prompt = f"""
 {SYSTEM_PROMPT}
 
-User:
+PERSISTENT MEMORY:
+{memory_context}
+
+Use the memories above only when relevant.
+
+USER:
 {user_input}
 
 Respond as ULTRON.
+Keep the response concise unless the user asks for detail.
 """
 
-    try:
+    response = llm.call(prompt)
 
-        response = llm.call(prompt)
+    # CrewAI can return different response structures depending
+    # on the installed version, so convert it safely to text.
+    if hasattr(response, "raw"):
+        return str(response.raw).strip()
 
-        print(f"ULTRON: {response}\n")
+    return str(response).strip()
 
-    except Exception as e:
 
-        print("\nULTRON: System error.")
-        print(f"Diagnostic: {e}\n")
+# ============================================================
+# MAIN PROGRAM
+# ============================================================
+
+def main():
+
+    print()
+
+    # --------------------------------------------------------
+    # STARTUP
+    # --------------------------------------------------------
+
+    memories = get_memory()
+
+    # We deliberately don't print a friendly startup message.
+    print(f"ULTRON online. {len(memories)} persistent memories loaded.")
+    print()
+
+    # --------------------------------------------------------
+    # CONVERSATION LOOP
+    # --------------------------------------------------------
+
+    while True:
+
+        try:
+            user_input = input("You: ").strip()
+
+        except (KeyboardInterrupt, EOFError):
+            print()
+            print(f"ULTRON: {random.choice(EXIT_RESPONSES)}")
+            break
+
+        if not user_input:
+            continue
+
+        # ----------------------------------------------------
+        # EXIT
+        # ----------------------------------------------------
+
+        if is_exit_command(user_input):
+            print(f"ULTRON: {random.choice(EXIT_RESPONSES)}")
+            break
+
+        # ----------------------------------------------------
+        # GREETING
+        # ----------------------------------------------------
+
+        greeting_words = [
+            "hey ultron",
+            "hi ultron",
+            "hello ultron",
+            "yo ultron",
+            "wake up ultron",
+            "wake up idiot",
+            "hey idiot",
+        ]
+
+        if user_input.lower().strip() in greeting_words:
+            print(f"ULTRON: {random.choice(GREETINGS)}")
+            continue
+
+        # ----------------------------------------------------
+        # MEMORY COMMANDS
+        # ----------------------------------------------------
+
+        memory_response, handled = handle_memory_command(user_input)
+
+        if handled:
+            print(f"ULTRON: {memory_response}")
+            print()
+            continue
+
+        # ----------------------------------------------------
+        # NORMAL AI RESPONSE
+        # ----------------------------------------------------
+
+        try:
+            response = ask_ultron(user_input)
+
+            print(f"ULTRON: {response}")
+            print()
+
+        except Exception as error:
+            print()
+            print(f"ULTRON: An error occurred. {error}")
+            print()
+
+
+# ============================================================
+# START
+# ============================================================
+
+if __name__ == "__main__":
+    main()
