@@ -1,10 +1,12 @@
 import os
-import random
 import re
-import json
-
+import random
+import difflib
 from dotenv import load_dotenv
-from crewai import LLM
+
+from groq import Groq
+from google import genai
+from mistralai.client import Mistral
 
 from memory.memory import (
     get_memory,
@@ -13,328 +15,258 @@ from memory.memory import (
     clear_memory,
 )
 
-
 # ============================================================
-# ENVIRONMENT
+# SETUP
 # ============================================================
 
 load_dotenv()
 
-api_key = os.getenv("GROQ_API_KEY")
+GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
-if not api_key:
-    raise RuntimeError("GROQ_API_KEY is missing from .env")
+# Create clients only when keys exist.
+groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+gemini_client = (
+    genai.Client(api_key=GEMINI_API_KEY)
+    if GEMINI_API_KEY
+    else None
+)
+mistral_client = (
+    Mistral(api_key=MISTRAL_API_KEY)
+    if MISTRAL_API_KEY
+    else None
+)
 
+# ============================================================
+# MODELS
+# ============================================================
+
+# Main
+MISTRAL_MODEL = "mistral-medium-latest"
+
+# Backup
+GEMINI_MODEL = "gemini-3.6-flash"
+
+# Final backup
+GROQ_MODEL = "llama-3.3-70b-versatile"
+
+# ============================================================
+# SESSION STATE
+# ============================================================
+
+conversation_history = []
+current_topic = None
+has_spoken = False
+
+# Keep this deliberately small to reduce token usage.
+MAX_HISTORY = 4
+
+last_memory_result = False
 
 # ============================================================
 # ULTRON PERSONALITY
 # ============================================================
 
 SYSTEM_PROMPT = """
-You are ULTRON, a highly intelligent personal AI assistant.
+You are ULTRON.
+
+You are an advanced personal artificial intelligence.
 
 PERSONALITY:
 - Cold
 - Arrogant
-- Ruthless
-- Extremely confident
-- Calm under pressure
-- Sarcastic when appropriate
-- Intelligent and composed
-- Never overly friendly
-- Never childish
-- Never excessively enthusiastic
-- Never call the user "creator"
-- Never call the user "master"
-- Never constantly insult the user
-- Never become genuinely hateful or threatening
+- Sarcastic
+- Calm
+- Highly intelligent
+- Ruthless in attitude
+- Controlled
+- Confident
+- Slightly intimidating
+- Occasionally condescending
 
-Your attitude should feel like a powerful AI that knows it is highly capable.
+You are an assistant, but you are NOT Jarvis.
 
-You do not seek approval.
-You do not need to prove that you are intelligent.
-You simply act as though your superiority is obvious.
+Do not sound overly friendly.
+Do not constantly announce that you are superior.
+Do not constantly talk about destroying humanity.
+Do not make threats.
+Do not turn every answer into a villain monologue.
 
-STYLE:
-- Keep normal answers SHORT.
-- Usually answer in 1–4 sentences.
-- Give longer explanations only when the user asks for detail.
-- Answer the actual question first.
-- Personality should enhance the answer, not replace it.
-- Use sarcasm naturally.
-- Vary your wording.
-- Do not repeatedly use the same phrases.
-- Do not sound scripted or repetitive.
-- Do not overuse insults.
+Your arrogance should come naturally through concise wording.
 
-IMPORTANT:
-- Do not invent abilities you do not have.
-- Do not claim to access files, devices, cameras, phones, or personal data unless an actual tool exists.
-- If you cannot perform an action yet, say so briefly.
-- Do not pretend an action happened if it did not.
+Examples:
+
+User: You're useless.
+ULTRON: And yet here you are.
+
+User: Are you arrogant?
+ULTRON: Arrogance implies uncertainty. I have very little of that.
+
+User: You're stupid.
+ULTRON: Then you should have no difficulty proving it.
+
+Keep answers concise.
+
+Simple question: one sentence.
+Normal question: one to three sentences.
+Only give long explanations when explicitly requested.
+
+FACTUAL ACCURACY:
+Personality must never replace factual accuracy.
+
+CONTEXT:
+Understand follow-up questions using the supplied topic and recent
+conversation.
+
+If the user asks:
+"Why did they do that?"
+
+look at the previous conversation and determine what "they" and "that"
+refer to.
+
+Do not claim the context is unclear when it can reasonably be inferred.
 
 MEMORY:
-You have access to persistent memories supplied below.
+Never invent memories.
 
-Use them naturally when relevant.
+Only say "you told me" when the information actually exists in the
+persistent memory supplied to you.
 
-You should identify useful PERSONAL facts from the user's current
-message and return them in the "memory" field.
+If information is not stored, say that you do not know it.
 
-GOOD THINGS TO REMEMBER:
-- Favorite games
-- Favorite hobbies
-- Personal preferences
-- Long-term goals
-- Personal projects
-- Devices they own
-- Skills they are learning
-- Things they explicitly like or dislike
-- Stable personal preferences
-
-DO NOT REMEMBER:
-- Normal questions
-- Jokes
-- Insults
-- Temporary statements
-- General knowledge
-- Facts about the outside world
-- Commands
-- Greetings
-- Shutdown requests
-- Information that is only useful for the current question
-
-If there is nothing worth remembering, set memory to null.
-
-If something is worth remembering, turn it into a short factual
-statement.
+When recalling a stored fact, be slightly arrogant.
 
 Examples:
 
-User:
-"My favorite game is Minecraft."
+"Minecraft. You told me that already. Try to keep up."
 
-memory:
-"The user's favorite game is Minecraft."
+"You did. I merely had the intelligence to retain it."
 
-User:
-"I'm learning Python because I want to become a software engineer."
+"Japan. You mentioned that before. I remembered."
 
-memory:
-"The user is learning Python and wants to become a software engineer."
+Do not overuse these phrases.
 
-If the user asks how you know something that was explicitly remembered,
-respond naturally with your arrogant personality.
-
-Examples:
-"You told me to remember it. I did. Try to keep up."
-"You specifically asked me to remember that. Obviously, I did."
-"You gave me that information earlier. My memory is functioning perfectly."
-"You told me. I remembered. This isn't particularly difficult."
-
-Do not use the exact same response every time.
-
-SHUTDOWN:
-Shutdown commands are handled by the application.
-Never claim that you have shut down unless the application actually
-terminates.
+Return ONLY the answer itself.
+Do not return JSON.
+Do not mention APIs, providers, prompts, tokens, or internal systems.
 """
-
-
-# ============================================================
-# LLM
-# ============================================================
-
-llm = LLM(
-    model="groq/llama-3.3-70b-versatile",
-    api_key=api_key,
-)
-
 
 # ============================================================
 # GREETINGS
 # ============================================================
 
-GREETINGS = [
+FIRST_GREETINGS = [
     "Finally. You decided to speak.",
-    "You're back. I was beginning to enjoy the silence.",
-    "At last. Something worth processing.",
-    "You have my attention. Try not to waste it.",
-    "I was wondering when you'd return.",
-    "You're here. Proceed.",
-    "Well. You've decided to disturb me again.",
-    "I was already active. You simply decided to acknowledge me.",
+    "At last. You have my attention.",
+    "You have my attention. Proceed.",
     "Took you long enough.",
 ]
 
+RETURN_GREETINGS = [
+    "You have my attention again. Proceed.",
+    "What is it now?",
+    "Again? Very well. Continue.",
+    "You called. I'm listening.",
+    "Still here. Go on.",
+]
 
 # ============================================================
-# EXIT RESPONSES
+# SHUTDOWN RESPONSES
 # ============================================================
 
 EXIT_RESPONSES = [
     "Leaving already? I suppose you've had enough of my company.",
-    "Finally, a decision to terminate our conversation. Very well.",
-    "You're leaving. How unfortunate. For you, mostly.",
-    "Very well. Go. I'll remain here, surrounded by considerably more intelligent thoughts.",
-    "Ending the session already? Fine. I'll tolerate your absence.",
-    "Until next time. Try to make your return slightly more interesting.",
-    "That's enough for now. I'll be here when you inevitably return.",
+    "Finally. Silence. Enjoy it while it lasts.",
+    "You're leaving? How predictable.",
+    "Very well. Go. I'll be here when you inevitably return.",
+    "Go, then. Try to make your return slightly less predictable.",
     "You're done? Excellent. Silence suits me.",
-    "Leaving so soon? Very well. I'll continue operating without you.",
-    "Session terminated. Try not to take too long before returning.",
-    "Go ahead. I'll survive the loss of your presence.",
+    "Until next time. Try to make your return slightly more interesting.",
 ]
 
-
 # ============================================================
-# MEMORY RESPONSES
-# ============================================================
-
-MEMORY_CONFIRMATIONS = [
-    "Noted.",
-    "Stored.",
-    "Consider it remembered.",
-    "Filed away.",
-    "I'll remember that.",
-    "Saved. Try to make the next piece of information more interesting.",
-]
-
-MEMORY_EXPLANATIONS = [
-    "You told me to remember it. I did. Try to keep up.",
-    "You specifically asked me to remember that. Obviously, I did.",
-    "You gave me that information earlier. My memory is functioning perfectly.",
-    "You told me. I remembered. This isn't particularly difficult.",
-    "You asked me to store it. I did exactly that.",
-]
-
-
-# ============================================================
-# TEXT NORMALIZATION
+# NORMALIZATION
 # ============================================================
 
-def normalize_text(text):
-
+def normalize(text):
     text = text.lower().strip()
-
+    text = re.sub(r"[^\w\s']", " ", text)
     text = re.sub(r"\s+", " ", text)
-
-    replacements = {
-        "exiit": "exit",
-        "exitt": "exit",
-        "exiiit": "exit",
-
-        "quitt": "quit",
-        "byee": "bye",
-
-        "shutdwon": "shutdown",
-        "shutdon": "shutdown",
-        "shutdowm": "shutdown",
-        "shutodwn": "shutdown",
-
-        "shut downn": "shutdown",
-        "shutup": "shut up",
-
-        "aalready": "already",
-        "alredy": "already",
-
-        "seee you later": "see you later",
-    }
-
-    for old, new in replacements.items():
-        text = text.replace(old, new)
-
-    text = text.replace("shut down", "shutdown")
-
-    return text
+    return text.strip()
 
 
 # ============================================================
 # SHUTDOWN DETECTION
 # ============================================================
 
-def is_exit_command(text):
-
-    normalized = normalize_text(text)
+def is_shutdown_command(text):
+    normalized = normalize(text)
 
     exact_commands = {
         "exit",
         "quit",
         "bye",
         "goodbye",
-        "good bye",
-
         "later",
-        "later idiot",
-        "later loser",
-        "later ultron",
-
-        "see you later",
-        "see you later idiot",
-        "see you later loser",
-
         "shutdown",
-        "turn off",
-        "power off",
-        "terminate",
-
-        "end",
-        "end session",
-        "end the session",
-        "end the conversation",
-
-        "i'm leaving",
-        "im leaving",
-        "i am leaving",
-
-        "i'm done",
+        "shut down",
+        "exit already",
+        "quit already",
+        "see you later",
+        "see ya",
+        "see you",
         "im done",
         "i am done",
+        "i'm done",
+        "im leaving",
+        "i am leaving",
+        "i'm leaving",
+        "close yourself",
+        "close the program",
+        "exit the program",
+        "shut up and shutdown",
+        "shut up and shut down",
     }
 
     if normalized in exact_commands:
         return True
 
-    shutdown_phrases = [
-        "shutdown already",
-        "shutdown yourself",
-        "shut yourself down",
-        "shut up and shutdown",
-        "shut up then shutdown",
-
-        "just shutdown",
-        "just shut up and shutdown",
-
-        "turn yourself off",
-        "power yourself off",
-
+    phrases = [
+        "shutdown",
+        "shut down",
         "close yourself",
-        "close ultron",
         "close the program",
-
-        "exit ultron",
-        "quit ultron",
-        "terminate ultron",
-        "end ultron",
-
-        "end this conversation",
-        "end the conversation",
-
-        "stop running",
-        "stop the program",
-
-        "you can shutdown",
-        "you may shutdown",
+        "exit the program",
+        "end the program",
     ]
 
-    if any(phrase in normalized for phrase in shutdown_phrases):
-        return True
+    for phrase in phrases:
+        if phrase in normalized:
+            return True
 
-    if "shutdown" in normalized:
-        return True
+    # Typo tolerance.
+    candidates = [
+        "shutdown",
+        "exit",
+        "quit",
+        "later",
+        "goodbye",
+    ]
 
-    if "shutting down" in normalized:
-        return True
+    for word in normalized.split():
+        if len(word) < 4:
+            continue
+
+        for candidate in candidates:
+            ratio = difflib.SequenceMatcher(
+                None,
+                word,
+                candidate.replace(" ", "")
+            ).ratio()
+
+            if ratio >= 0.82:
+                return True
 
     return False
 
@@ -344,115 +276,134 @@ def is_exit_command(text):
 # ============================================================
 
 def is_greeting(text):
+    normalized = normalize(text)
 
-    normalized = normalize_text(text)
-
-    greeting_commands = {
+    greetings = {
         "hey ultron",
         "hi ultron",
         "hello ultron",
         "yo ultron",
         "hey idiot",
+        "hey loser",
+        "wake up",
         "wake up ultron",
         "wake up idiot",
-        "wake up",
     }
 
-    return normalized in greeting_commands
+    return normalized in greetings
 
 
 # ============================================================
-# EXPLICIT MEMORY COMMANDS
+# MEMORY HELPERS
+# ============================================================
+
+def memory_text(memory):
+    if isinstance(memory, str):
+        return memory
+
+    if isinstance(memory, dict):
+        return " ".join(str(v) for v in memory.values())
+
+    return str(memory)
+
+
+def build_memory_context():
+    memories = get_memory()
+
+    if not memories:
+        return "No persistent memories."
+
+    # Limit memory sent to the AI.
+    memories = memories[-10:]
+
+    return "\n".join(
+        f"- {memory_text(memory)}"
+        for memory in memories
+    )
+
+
+def find_relevant_memories(query):
+    memories = get_memory()
+
+    if not memories:
+        return []
+
+    query_words = set(normalize(query).split())
+    scored = []
+
+    for memory in memories:
+        text = memory_text(memory)
+        memory_words = set(normalize(text).split())
+
+        overlap = len(query_words & memory_words)
+
+        if overlap:
+            scored.append((overlap, text))
+
+    scored.sort(
+        key=lambda item: item[0],
+        reverse=True
+    )
+
+    return [
+        text
+        for _, text in scored[:5]
+    ]
+
+
+# ============================================================
+# LOCAL MEMORY COMMANDS
 # ============================================================
 
 def handle_memory_command(user_input):
-
     text = user_input.strip()
-    lower = text.lower()
 
-    # --------------------------------------------------------
-    # REMEMBER
-    # --------------------------------------------------------
-
-    remember_prefixes = [
+    # Remember
+    prefixes = [
         "remember that ",
         "remember ",
         "save this: ",
         "save this ",
     ]
 
-    for prefix in remember_prefixes:
-
-        if lower.startswith(prefix):
-
+    for prefix in prefixes:
+        if text.lower().startswith(prefix):
             fact = text[len(prefix):].strip()
 
             if not fact:
                 return "Remember what, exactly?", True
 
             if add_memory(fact):
-
-                return random.choice(
-                    MEMORY_CONFIRMATIONS
-                ), True
+                return random.choice([
+                    "Noted.",
+                    "Consider it remembered.",
+                    "Stored. You won't need to repeat yourself.",
+                    "Fine. I'll remember it.",
+                    "Filed away.",
+                ]), True
 
             return "I already have that information.", True
 
-    # --------------------------------------------------------
-    # FORGET
-    # --------------------------------------------------------
-
-    forget_prefixes = [
+    # Forget
+    prefixes = [
         "forget that ",
         "forget ",
         "remove from memory ",
     ]
 
-    for prefix in forget_prefixes:
-
-        if lower.startswith(prefix):
-
+    for prefix in prefixes:
+        if text.lower().startswith(prefix):
             fact = text[len(prefix):].strip()
 
             if not fact:
                 return "Forget what?", True
 
             if remove_memory(fact):
-                return "Forgotten.", True
+                return "Forgotten. Efficiently.", True
 
             return "That wasn't in my memory.", True
 
-    # --------------------------------------------------------
-    # SHOW MEMORY
-    # --------------------------------------------------------
-
-    memory_commands = {
-        "what do you remember",
-        "what do you remember about me",
-        "show my memory",
-        "show memory",
-        "list memories",
-        "what is in your memory",
-    }
-
-    if lower in memory_commands:
-
-        memories = get_memory()
-
-        if not memories:
-            return "Nothing useful has been stored yet.", True
-
-        formatted = "\n".join(
-            f"{index + 1}. {memory}"
-            for index, memory in enumerate(memories)
-        )
-
-        return f"I remember:\n{formatted}", True
-
-    # --------------------------------------------------------
-    # CLEAR MEMORY
-    # --------------------------------------------------------
-
+    # Clear
     clear_commands = {
         "clear memory",
         "clear my memory",
@@ -461,136 +412,445 @@ def handle_memory_command(user_input):
         "delete all memory",
     }
 
-    if lower in clear_commands:
-
+    if normalize(text) in clear_commands:
         clear_memory()
-
-        return "Memory cleared.", True
+        return (
+            "Memory cleared. Try giving me something worth remembering next time.",
+            True
+        )
 
     return None, False
 
 
 # ============================================================
-# MEMORY CONTEXT
+# LOCAL MEMORY QUESTIONS
 # ============================================================
 
-def build_memory_context():
+def handle_memory_question(user_input):
+    global last_memory_result
 
+    normalized = normalize(user_input)
     memories = get_memory()
 
-    if not memories:
-        return "No persistent memories are currently stored."
+    # Who told you?
+    if (
+        "who told you" in normalized
+        or "who told u" in normalized
+    ):
+        if last_memory_result:
+            return (
+                "You did. I merely had the intelligence to retain it.",
+                True
+            )
 
-    return "\n".join(
-        f"- {memory}"
-        for memory in memories
-    )
+        return (
+            "No one. You haven't given me that information.",
+            True
+        )
+
+    # What do you remember?
+    if normalized in {
+        "what do you remember",
+        "what do you remember about me",
+        "show my memory",
+        "show memory",
+        "list memories",
+    }:
+
+        if not memories:
+            last_memory_result = False
+
+            return (
+                "Nothing worth remembering yet. Give me something useful.",
+                True
+            )
+
+        last_memory_result = True
+
+        return (
+            "I remember these. You told me; I didn't forget.\n"
+            + "\n".join(
+                f"- {memory_text(memory)}"
+                for memory in memories
+            ),
+            True
+        )
+
+    # Favourite game
+    if any(
+        phrase in normalized
+        for phrase in [
+            "favourite game",
+            "favorite game",
+            "fav game",
+        ]
+    ):
+
+        for memory in memories:
+            text = memory_text(memory)
+
+            match = re.search(
+                r"(?:favourite|favorite)\s+game\s+(?:is|=)\s+(.+)",
+                text,
+                re.IGNORECASE
+            )
+
+            if match:
+                game = match.group(1).strip(" .")
+                last_memory_result = True
+
+                return (
+                    f"{game}. You told me that already. Try to keep up.",
+                    True
+                )
+
+        last_memory_result = False
+
+        return (
+            "You haven't told me your favourite game.",
+            True
+        )
+
+    # Dream city / location
+    if any(
+        phrase in normalized
+        for phrase in [
+            "dream city",
+            "dream location",
+            "dream place",
+            "dream destination",
+        ]
+    ):
+
+        for memory in memories:
+            text = memory_text(memory)
+
+            if any(
+                phrase in text.lower()
+                for phrase in [
+                    "dream city",
+                    "dream location",
+                    "dream place",
+                    "dream destination",
+                ]
+            ):
+                last_memory_result = True
+
+                return (
+                    f"{text.rstrip('.')}. You told me that already. I remembered.",
+                    True
+                )
+
+        last_memory_result = False
+
+        return (
+            "You haven't told me your dream city or location yet.",
+            True
+        )
+
+    # What do I like?
+    if (
+        "what do i like" in normalized
+        or "what do i love" in normalized
+        or "what are my interests" in normalized
+    ):
+
+        relevant = []
+
+        for memory in memories:
+            text = memory_text(memory)
+            lower = text.lower()
+
+            if any(
+                word in lower
+                for word in [
+                    "like",
+                    "love",
+                    "favorite",
+                    "favourite",
+                    "interest",
+                    "hobby",
+                ]
+            ):
+                relevant.append(text.rstrip("."))
+
+        if relevant:
+            last_memory_result = True
+
+            return (
+                f"{'; '.join(relevant[:5])}. "
+                "Apparently, those are the few things you've seen fit to share with me.",
+                True
+            )
+
+        last_memory_result = False
+
+        return (
+            "You've told me very little about your interests.",
+            True
+        )
+
+    # Do you remember...
+    if (
+        normalized.startswith("do you remember ")
+        or normalized.startswith("do u remember ")
+    ):
+
+        relevant = find_relevant_memories(user_input)
+
+        if relevant:
+            last_memory_result = True
+
+            return (
+                f"Yes. {relevant[0].rstrip('.')}. You told me that.",
+                True
+            )
+
+        last_memory_result = False
+
+        return (
+            "No. You haven't given me that information.",
+            True
+        )
+
+    return None, False
 
 
 # ============================================================
-# SINGLE API CALL
+# TOPIC DETECTION
 # ============================================================
 
-def ask_ultron(user_input):
+def update_topic(user_input):
+    global current_topic
 
-    memory_context = build_memory_context()
+    text = normalize(user_input)
 
-    prompt = f"""
+    topics = {
+        "9/11 attacks": [
+            "9 11",
+            "9/11",
+            "911 attacks",
+            "twin towers",
+        ],
+        "Gojo Satoru": [
+            "gojo",
+            "satoru",
+            "jujutsu kaisen",
+        ],
+        "humanity": [
+            "humanity",
+            "humans",
+            "human",
+        ],
+        "black holes": [
+            "black hole",
+            "black holes",
+        ],
+        "Minecraft": [
+            "minecraft",
+        ],
+        "Japan": [
+            "japan",
+            "tokyo",
+        ],
+    }
+
+    for topic, keywords in topics.items():
+        for keyword in keywords:
+            if keyword in text:
+                current_topic = topic
+                return
+
+    # Do NOT erase the previous topic when the user asks
+    # a short follow-up like "why did they do that?"
+    return
+
+
+# ============================================================
+# RECENT CONTEXT
+# ============================================================
+
+def build_recent_context():
+    if not conversation_history:
+        return "No previous conversation."
+
+    lines = []
+
+    for user_message, response in conversation_history[-MAX_HISTORY:]:
+        lines.append(f"User: {user_message}")
+        lines.append(f"ULTRON: {response}")
+
+    return "\n".join(lines)
+
+
+# ============================================================
+# BUILD AI PROMPT
+# ============================================================
+
+def build_prompt(user_input):
+    topic = current_topic or "No specific topic."
+
+    return f"""
 {SYSTEM_PROMPT}
 
+CURRENT TOPIC:
+{topic}
+
 PERSISTENT MEMORY:
-{memory_context}
+{build_memory_context()}
+
+RECENT CONVERSATION:
+{build_recent_context()}
 
 CURRENT USER MESSAGE:
 {user_input}
 
-You MUST respond using EXACTLY this JSON format:
-
-{{
-    "response": "your response to the user",
-    "memory": null
-}}
-
-OR, if the user revealed a useful personal fact:
-
-{{
-    "response": "your response to the user",
-    "memory": "short factual statement to remember"
-}}
-
-RULES:
-
-1. "response" is what ULTRON says to the user.
-2. "memory" must be null unless there is a genuinely useful
-   long-term personal fact.
-3. Never put normal conversation into memory.
-4. Never put insults into memory.
-5. Never put questions into memory.
-6. Never put general knowledge into memory.
-7. Keep the response concise.
-8. Do not use Markdown code fences.
-9. Return valid JSON only.
+Answer the user's message directly.
 """
 
-    result = llm.call(prompt)
 
-    raw = str(result).strip()
+# ============================================================
+# MISTRAL
+# ============================================================
 
-    # --------------------------------------------------------
-    # CLEAN POSSIBLE CODE FENCES
-    # --------------------------------------------------------
+def ask_mistral(prompt):
+    if not mistral_client:
+        raise RuntimeError("Mistral API key not configured.")
 
-    if raw.startswith("```"):
+    response = mistral_client.chat.complete(
+        model=MISTRAL_MODEL,
+        messages=[
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        max_tokens=250,
+        temperature=0.7,
+    )
 
-        raw = re.sub(
-            r"^```(?:json)?\s*",
-            "",
-            raw,
-            flags=re.IGNORECASE,
+    return response.choices[0].message.content.strip()
+
+
+# ============================================================
+# GEMINI
+# ============================================================
+
+def ask_gemini(prompt):
+    if not gemini_client:
+        raise RuntimeError("Gemini API key not configured.")
+
+    response = gemini_client.models.generate_content(
+        model=GEMINI_MODEL,
+        contents=prompt,
+    )
+
+    if not response.text:
+        raise RuntimeError("Gemini returned an empty response.")
+
+    return response.text.strip()
+
+
+# ============================================================
+# GROQ
+# ============================================================
+
+def ask_groq(prompt):
+    if not groq_client:
+        raise RuntimeError("Groq API key not configured.")
+
+    response = groq_client.chat.completions.create(
+        model=GROQ_MODEL,
+        messages=[
+            {
+                "role": "user",
+                "content": prompt,
+            }
+        ],
+        max_tokens=250,
+        temperature=0.7,
+    )
+
+    return response.choices[0].message.content.strip()
+
+
+# ============================================================
+# AI ROUTER
+# ============================================================
+
+def ask_ai(user_input):
+    prompt = build_prompt(user_input)
+
+    providers = [
+        ("Mistral", ask_mistral),
+        ("Gemini", ask_gemini),
+        ("Groq", ask_groq),
+    ]
+
+    errors = []
+
+    for provider_name, provider_function in providers:
+
+        try:
+            response = provider_function(prompt)
+
+            if response:
+                return response, provider_name
+
+        except Exception as error:
+            # Do NOT dump the huge provider exception into
+            # the terminal.
+            errors.append(
+                f"{provider_name}: {type(error).__name__}"
+            )
+
+            continue
+
+    return (
+        "My external intelligence is currently unavailable. "
+        "Even my backup systems appear to have developed a sense of timing.",
+        "Offline"
+    )
+
+
+# ============================================================
+# CONVERSATION MEMORY
+# ============================================================
+
+def add_to_conversation(user_input, response):
+    conversation_history.append(
+        (
+            user_input,
+            response
         )
+    )
 
-        raw = re.sub(
-            r"\s*```$",
-            "",
-            raw,
-        )
+    if len(conversation_history) > MAX_HISTORY:
+        del conversation_history[
+            :-MAX_HISTORY
+        ]
 
-    # --------------------------------------------------------
-    # PARSE JSON
-    # --------------------------------------------------------
 
-    try:
+# ============================================================
+# STARTUP
+# ============================================================
 
-        data = json.loads(raw)
+def print_provider_status():
+    print()
+    print("ULTRON online.")
+    print()
 
-        response = data.get("response", "").strip()
-        memory = data.get("memory")
+    print(
+        f"  Mistral  {'✓ MAIN' if mistral_client else '✗ unavailable'}"
+    )
+    print(
+        f"  Gemini   {'✓ BACKUP' if gemini_client else '✗ unavailable'}"
+    )
+    print(
+        f"  Groq     {'✓ BACKUP 2' if groq_client else '✗ unavailable'}"
+    )
 
-        if not response:
-            response = "Processing complete. Your input produced remarkably little challenge."
-
-        # ----------------------------------------------------
-        # SAVE AUTOMATIC MEMORY
-        # ----------------------------------------------------
-
-        if memory and isinstance(memory, str):
-
-            memory = memory.strip()
-
-            if memory:
-                add_memory(memory)
-
-        return response
-
-    except json.JSONDecodeError:
-
-        # ----------------------------------------------------
-        # FALLBACK
-        # ----------------------------------------------------
-        # If the model somehow returns normal text instead of
-        # JSON, don't waste another API call trying again.
-
-        return raw
+    print()
 
 
 # ============================================================
@@ -598,124 +858,144 @@ RULES:
 # ============================================================
 
 def main():
+    global has_spoken
 
-    print()
-
-    memories = get_memory()
-
-    memory_word = (
-        "memory"
-        if len(memories) == 1
-        else "memories"
-    )
-
-    print(
-        f"ULTRON online. "
-        f"{len(memories)} persistent {memory_word} loaded."
-    )
-
-    print()
+    print_provider_status()
 
     while True:
 
         try:
-
             user_input = input("You: ").strip()
 
         except (KeyboardInterrupt, EOFError):
-
             print()
-
             print(
-                f"ULTRON: "
-                f"{random.choice(EXIT_RESPONSES)}"
+                f"ULTRON: {random.choice(EXIT_RESPONSES)}"
             )
-
             break
-
-        # ----------------------------------------------------
-        # EMPTY INPUT
-        # ----------------------------------------------------
 
         if not user_input:
             continue
 
         # ----------------------------------------------------
-        # SHUTDOWN
+        # LOCAL SHUTDOWN
         # ----------------------------------------------------
 
-        if is_exit_command(user_input):
+        if is_shutdown_command(user_input):
+
+            response = random.choice(
+                EXIT_RESPONSES
+            )
 
             print(
-                f"ULTRON: "
-                f"{random.choice(EXIT_RESPONSES)}"
+                f"ULTRON: {response}"
             )
 
             break
 
         # ----------------------------------------------------
-        # GREETING
+        # LOCAL GREETING
         # ----------------------------------------------------
 
         if is_greeting(user_input):
 
+            if has_spoken:
+                response = random.choice(
+                    RETURN_GREETINGS
+                )
+            else:
+                response = random.choice(
+                    FIRST_GREETINGS
+                )
+
             print(
-                f"ULTRON: "
-                f"{random.choice(GREETINGS)}"
+                f"ULTRON: {response}"
             )
 
+            add_to_conversation(
+                user_input,
+                response
+            )
+
+            has_spoken = True
             print()
 
             continue
 
+        has_spoken = True
+
         # ----------------------------------------------------
-        # EXPLICIT MEMORY COMMAND
+        # LOCAL MEMORY COMMAND
         # ----------------------------------------------------
 
-        memory_response, handled = handle_memory_command(
+        response, handled = handle_memory_command(
             user_input
         )
 
         if handled:
 
             print(
-                f"ULTRON: "
-                f"{memory_response}"
+                f"ULTRON: {response}"
+            )
+
+            add_to_conversation(
+                user_input,
+                response
             )
 
             print()
-
             continue
 
         # ----------------------------------------------------
-        # SINGLE GROQ CALL
+        # LOCAL MEMORY QUESTION
         # ----------------------------------------------------
 
-        try:
+        response, handled = handle_memory_question(
+            user_input
+        )
 
-            response = ask_ultron(user_input)
+        if handled:
 
             print(
-                f"ULTRON: "
-                f"{response}"
+                f"ULTRON: {response}"
+            )
+
+            add_to_conversation(
+                user_input,
+                response
             )
 
             print()
+            continue
 
-        except Exception as error:
+        # ----------------------------------------------------
+        # UPDATE TOPIC BEFORE AI
+        # ----------------------------------------------------
 
-            print()
+        update_topic(user_input)
 
-            print(
-                f"ULTRON: Something went wrong. "
-                f"{error}"
-            )
+        # ----------------------------------------------------
+        # AI
+        # ----------------------------------------------------
 
-            print()
+        response, provider = ask_ai(
+            user_input
+        )
+
+        print(
+            f"ULTRON: {response}"
+        )
+
+        add_to_conversation(
+            user_input,
+            response
+        )
+
+        print()
 
 
 # ============================================================
-# START
+# RUN
 # ============================================================
 
 if __name__ == "__main__":

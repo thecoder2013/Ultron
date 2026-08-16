@@ -2,23 +2,20 @@ import json
 from pathlib import Path
 
 
-MEMORY_FILE = Path(__file__).parent.parent / "memory.json"
+# Always use the memory.json beside this file.
+# This prevents Windows/VS Code from accidentally using
+# the wrong working directory.
+
+MEMORY_FILE = Path(__file__).resolve().parent / "memory.json"
 
 
-def load_memory_data():
-
+def _load_data():
     if not MEMORY_FILE.exists():
         return {"facts": []}
 
     try:
-
-        with open(
-            MEMORY_FILE,
-            "r",
-            encoding="utf-8"
-        ) as file:
-
-            data = json.load(file)
+        with open(MEMORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
 
         if not isinstance(data, dict):
             return {"facts": []}
@@ -28,86 +25,61 @@ def load_memory_data():
 
         return data
 
-    except (
-        json.JSONDecodeError,
-        OSError
-    ):
-
+    except (json.JSONDecodeError, OSError):
         return {"facts": []}
 
 
-def save_memory_data(data):
-
-    with open(
-        MEMORY_FILE,
-        "w",
-        encoding="utf-8"
-    ) as file:
-
-        json.dump(
-            data,
-            file,
-            indent=4,
-            ensure_ascii=False
-        )
+def _save_data(data):
+    with open(MEMORY_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
 
 def get_memory():
-
-    data = load_memory_data()
-
+    data = _load_data()
     return data["facts"]
 
 
 def add_memory(fact):
-
     fact = fact.strip()
 
     if not fact:
         return False
 
-    data = load_memory_data()
+    data = _load_data()
 
-    for existing in data["facts"]:
-
-        if (
-            existing.lower().strip()
-            == fact.lower().strip()
-        ):
-            return False
+    # Prevent duplicates
+    if fact.lower() in [x.lower() for x in data["facts"]]:
+        return False
 
     data["facts"].append(fact)
-
-    save_memory_data(data)
+    _save_data(data)
 
     return True
 
 
 def remove_memory(fact):
+    fact = fact.strip().lower()
 
-    fact = fact.strip()
+    data = _load_data()
 
-    data = load_memory_data()
-
-    original_length = len(data["facts"])
+    original_count = len(data["facts"])
 
     data["facts"] = [
-        existing
-        for existing in data["facts"]
-        if existing.lower().strip()
-        != fact.lower().strip()
+        item for item in data["facts"]
+        if item.lower() != fact
     ]
 
-    if len(data["facts"]) == original_length:
+    if len(data["facts"]) == original_count:
         return False
 
-    save_memory_data(data)
+    _save_data(data)
 
     return True
 
 
 def clear_memory():
+    _save_data({"facts": []})
 
-    save_memory_data({
-        "facts": []
-    })
+
+def memory_count():
+    return len(get_memory())
