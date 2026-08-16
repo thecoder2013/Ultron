@@ -1,5 +1,6 @@
 import os
 import random
+import re
 
 from dotenv import load_dotenv
 from crewai import LLM
@@ -57,11 +58,7 @@ STYLE:
 - Usually answer in 1–4 sentences.
 - Give longer explanations only when the user specifically asks for detail.
 - Avoid unnecessary introductions.
-- Do not repeatedly use phrases like:
-  "How quaint."
-  "A simple question."
-  "How delightful."
-  "As expected."
+- Do not repeatedly use the same sarcastic phrases.
 - Vary your wording naturally.
 - Do not sound repetitive or scripted.
 
@@ -77,6 +74,10 @@ MEMORY:
 - Use them naturally when relevant.
 - Do not mention the memory system unless the user asks.
 - Do not claim to remember something that is not present in the supplied memory.
+
+SHUTDOWN:
+- The application handles shutdown commands separately.
+- If the user asks about shutting down, do not pretend that you have shut down unless the application actually does so.
 """
 
 
@@ -99,10 +100,10 @@ GREETINGS = [
     "You're back. I was beginning to enjoy the silence.",
     "At last. Something worth processing.",
     "You have my attention. Try not to waste it.",
-    "Awake already? Interesting.",
     "I was wondering when you'd return.",
     "You're here. Proceed.",
     "Well. You've decided to disturb me again.",
+    "I was already active. You simply decided to acknowledge me.",
 ]
 
 
@@ -117,67 +118,150 @@ EXIT_RESPONSES = [
     "Very well. Go. I'll remain here, surrounded by considerably more intelligent thoughts.",
     "Ending the session already? Fine. I'll tolerate your absence.",
     "Until next time. Try to make your return slightly more interesting.",
-    "That's enough for now. Shut the system down and disappear.",
+    "That's enough for now. I'll be here when you inevitably return.",
     "You're done? Excellent. Silence suits me.",
+    "Leaving so soon? Very well. I'll continue operating without you.",
+    "Session terminated. Try not to take too long before returning.",
 ]
+
+
+# ============================================================
+# TEXT NORMALIZATION
+# ============================================================
+
+def normalize_text(text):
+    """
+    Normalize casual typing and common typos.
+
+    This is deliberately conservative so normal sentences
+    aren't accidentally interpreted as commands.
+    """
+
+    text = text.lower().strip()
+
+    # Remove repeated spaces
+    text = re.sub(r"\s+", " ", text)
+
+    # Common command typos
+    typo_replacements = {
+        "exiit": "exit",
+        "exitt": "exit",
+        "exiittt": "exit",
+        "quitt": "quit",
+        "byee": "bye",
+        "byee": "bye",
+        "shutdwon": "shutdown",
+        "shutdon": "shutdown",
+        "shutdowm": "shutdown",
+        "shutodwn": "shutdown",
+        "shut downn": "shut down",
+        "later idiot": "later idiot",
+        "later loser": "later loser",
+    }
+
+    return typo_replacements.get(text, text)
 
 
 # ============================================================
 # SHUTDOWN DETECTION
 # ============================================================
 
-EXIT_PHRASES = [
-    "exit",
-    "quit",
-    "shutdown",
-    "shut down",
-    "turn off",
-    "power off",
-    "goodbye",
-    "good bye",
-    "bye",
-    "later idiot",
-    "later loser",
-    "later ultron",
-    "see you later",
-    "i'm leaving",
-    "im leaving",
-    "i am leaving",
-    "i'm done",
-    "im done",
-    "i am done",
-    "end the session",
-    "terminate",
-]
-
-
 def is_exit_command(text):
     """
-    Detect whether the user wants Ultron to shut down.
+    Detect natural shutdown commands locally.
 
-    Uses phrases rather than blindly checking individual words.
+    This prevents the LLM from responding to the command instead
+    of actually ending the program.
     """
 
-    normalized = text.lower().strip()
+    normalized = normalize_text(text)
 
     # Exact commands
-    if normalized in EXIT_PHRASES:
+    exact_commands = {
+        "exit",
+        "quit",
+        "bye",
+        "goodbye",
+        "good bye",
+        "later",
+        "later idiot",
+        "later loser",
+        "later ultron",
+        "see you later",
+        "see u later",
+        "see you later idiot",
+        "see u later idiot",
+        "see you later loser",
+        "see u later loser",
+        "shutdown",
+        "shut down",
+        "turn off",
+        "power off",
+        "terminate",
+        "end",
+        "end session",
+        "end the session",
+        "end the conversation",
+        "i'm leaving",
+        "im leaving",
+        "i am leaving",
+        "i'm done",
+        "im done",
+        "i am done",
+    }
+
+    if normalized in exact_commands:
         return True
 
-    # Common natural-language shutdown commands
-    shutdown_patterns = [
+    # Natural shutdown phrases
+    shutdown_phrases = [
         "shutdown already",
         "shut down already",
         "shutdown yourself",
         "shut yourself down",
-        "close yourself",
-        "end yourself",
-        "end the conversation",
-        "stop running",
+        "shut down yourself",
         "turn yourself off",
+        "power yourself off",
+        "close yourself",
+        "close the program",
+        "close ultron",
+        "exit ultron",
+        "quit ultron",
+        "end ultron",
+        "terminate ultron",
+        "end the conversation",
+        "end this conversation",
+        "stop running",
+        "stop the program",
+        "shut up and shutdown",
+        "shut up and shut down",
+        "shut up and exit",
+        "you can shut down",
+        "you may shut down",
     ]
 
-    return any(pattern in normalized for pattern in shutdown_patterns)
+    return any(phrase in normalized for phrase in shutdown_phrases)
+
+
+# ============================================================
+# GREETING DETECTION
+# ============================================================
+
+def is_greeting(text):
+    normalized = normalize_text(text)
+
+    greeting_commands = {
+        "hey ultron",
+        "hi ultron",
+        "hello ultron",
+        "yo ultron",
+        "hey idiot",
+        "wake up ultron",
+        "wake up idiot",
+        "wake up",
+    }
+
+    return normalized in greeting_commands
 
 
 # ============================================================
@@ -221,6 +305,7 @@ def handle_memory_command(user_input):
                     "Filed away.",
                     "I'll remember that.",
                 ]
+
                 return random.choice(responses), True
 
             return "I already have that information.", True
@@ -251,13 +336,14 @@ def handle_memory_command(user_input):
     # SHOW MEMORY
     # --------------------------------------------------------
 
-    memory_commands = [
+    memory_commands = {
         "what do you remember",
         "what do you remember about me",
         "show my memory",
         "show memory",
         "list memories",
-    ]
+        "what is in your memory",
+    }
 
     if lower in memory_commands:
         memories = get_memory()
@@ -276,12 +362,13 @@ def handle_memory_command(user_input):
     # CLEAR MEMORY
     # --------------------------------------------------------
 
-    clear_commands = [
+    clear_commands = {
         "clear memory",
         "clear my memory",
         "forget everything",
         "erase memory",
-    ]
+        "delete all memory",
+    }
 
     if lower in clear_commands:
         clear_memory()
@@ -330,8 +417,6 @@ Keep the response concise unless the user asks for detail.
 
     response = llm.call(prompt)
 
-    # CrewAI can return different response structures depending
-    # on the installed version, so convert it safely to text.
     if hasattr(response, "raw"):
         return str(response.raw).strip()
 
@@ -346,19 +431,15 @@ def main():
 
     print()
 
-    # --------------------------------------------------------
-    # STARTUP
-    # --------------------------------------------------------
-
     memories = get_memory()
 
-    # We deliberately don't print a friendly startup message.
-    print(f"ULTRON online. {len(memories)} persistent memories loaded.")
-    print()
+    print(
+        f"ULTRON online. "
+        f"{len(memories)} persistent "
+        f"{'memory' if len(memories) == 1 else 'memories'} loaded."
+    )
 
-    # --------------------------------------------------------
-    # CONVERSATION LOOP
-    # --------------------------------------------------------
+    print()
 
     while True:
 
@@ -374,7 +455,7 @@ def main():
             continue
 
         # ----------------------------------------------------
-        # EXIT
+        # SHUTDOWN
         # ----------------------------------------------------
 
         if is_exit_command(user_input):
@@ -385,22 +466,13 @@ def main():
         # GREETING
         # ----------------------------------------------------
 
-        greeting_words = [
-            "hey ultron",
-            "hi ultron",
-            "hello ultron",
-            "yo ultron",
-            "wake up ultron",
-            "wake up idiot",
-            "hey idiot",
-        ]
-
-        if user_input.lower().strip() in greeting_words:
+        if is_greeting(user_input):
             print(f"ULTRON: {random.choice(GREETINGS)}")
+            print()
             continue
 
         # ----------------------------------------------------
-        # MEMORY COMMANDS
+        # MEMORY
         # ----------------------------------------------------
 
         memory_response, handled = handle_memory_command(user_input)
@@ -422,7 +494,7 @@ def main():
 
         except Exception as error:
             print()
-            print(f"ULTRON: An error occurred. {error}")
+            print(f"ULTRON: Something went wrong. {error}")
             print()
 
 
