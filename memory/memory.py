@@ -2,86 +2,112 @@ import json
 from pathlib import Path
 
 
-MEMORY_FILE = Path(__file__).parent / "memory.json"
+MEMORY_FILE = Path(__file__).parent.parent / "memory.json"
 
 
-def load_memory():
-    """Load persistent memories from disk."""
+def load_memory_data():
 
     if not MEMORY_FILE.exists():
         return {"facts": []}
 
     try:
-        with open(MEMORY_FILE, "r", encoding="utf-8") as file:
+
+        with open(
+            MEMORY_FILE,
+            "r",
+            encoding="utf-8"
+        ) as file:
+
             data = json.load(file)
 
         if not isinstance(data, dict):
             return {"facts": []}
 
-        if "facts" not in data or not isinstance(data["facts"], list):
+        if not isinstance(data.get("facts"), list):
             data["facts"] = []
 
         return data
 
-    except (json.JSONDecodeError, OSError):
+    except (
+        json.JSONDecodeError,
+        OSError
+    ):
+
         return {"facts": []}
 
 
-def save_memory(memory):
-    """Save persistent memories to disk."""
+def save_memory_data(data):
 
-    MEMORY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    with open(
+        MEMORY_FILE,
+        "w",
+        encoding="utf-8"
+    ) as file:
 
-    with open(MEMORY_FILE, "w", encoding="utf-8") as file:
-        json.dump(memory, file, indent=4, ensure_ascii=False)
+        json.dump(
+            data,
+            file,
+            indent=4,
+            ensure_ascii=False
+        )
+
+
+def get_memory():
+
+    data = load_memory_data()
+
+    return data["facts"]
 
 
 def add_memory(fact):
-    """Add a fact to persistent memory."""
 
     fact = fact.strip()
 
     if not fact:
         return False
 
-    memory = load_memory()
+    data = load_memory_data()
 
-    # Avoid duplicates
-    if fact.lower() in [item.lower() for item in memory["facts"]]:
-        return False
+    for existing in data["facts"]:
 
-    memory["facts"].append(fact)
-    save_memory(memory)
+        if (
+            existing.lower().strip()
+            == fact.lower().strip()
+        ):
+            return False
+
+    data["facts"].append(fact)
+
+    save_memory_data(data)
 
     return True
 
 
 def remove_memory(fact):
-    """Remove a matching memory."""
 
-    memory = load_memory()
+    fact = fact.strip()
 
-    original_count = len(memory["facts"])
+    data = load_memory_data()
 
-    memory["facts"] = [
-        item for item in memory["facts"]
-        if item.lower() != fact.lower()
+    original_length = len(data["facts"])
+
+    data["facts"] = [
+        existing
+        for existing in data["facts"]
+        if existing.lower().strip()
+        != fact.lower().strip()
     ]
 
-    if len(memory["facts"]) != original_count:
-        save_memory(memory)
-        return True
+    if len(data["facts"]) == original_length:
+        return False
 
-    return False
+    save_memory_data(data)
 
-
-def get_memory():
-    """Return all stored memories."""
-
-    return load_memory()["facts"]
+    return True
 
 
 def clear_memory():
-    """Clear all persistent memories."""
 
-    save_memory({"facts": []})
+    save_memory_data({
+        "facts": []
+    })

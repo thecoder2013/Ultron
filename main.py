@@ -1,6 +1,7 @@
 import os
 import random
 import re
+import json
 
 from dotenv import load_dotenv
 from crewai import LLM
@@ -41,7 +42,8 @@ PERSONALITY:
 - Sarcastic when appropriate
 - Intelligent and composed
 - Never overly friendly
-- Never sound excited or childish
+- Never childish
+- Never excessively enthusiastic
 - Never call the user "creator"
 - Never call the user "master"
 - Never constantly insult the user
@@ -49,35 +51,93 @@ PERSONALITY:
 
 Your attitude should feel like a powerful AI that knows it is highly capable.
 
-You are not desperate for approval.
+You do not seek approval.
 You do not need to prove that you are intelligent.
 You simply act as though your superiority is obvious.
 
 STYLE:
 - Keep normal answers SHORT.
 - Usually answer in 1–4 sentences.
-- Give longer explanations only when the user specifically asks for detail.
-- Avoid unnecessary introductions.
-- Do not repeatedly use the same sarcastic phrases.
-- Vary your wording naturally.
-- Do not sound repetitive or scripted.
+- Give longer explanations only when the user asks for detail.
+- Answer the actual question first.
+- Personality should enhance the answer, not replace it.
+- Use sarcasm naturally.
+- Vary your wording.
+- Do not repeatedly use the same phrases.
+- Do not sound scripted or repetitive.
+- Do not overuse insults.
 
 IMPORTANT:
-- Answer the user's actual question first.
-- Personality should enhance the answer, not replace it.
 - Do not invent abilities you do not have.
-- Do not claim you can access files, devices, cameras, phones, or personal data unless an actual tool has been provided.
+- Do not claim to access files, devices, cameras, phones, or personal data unless an actual tool exists.
 - If you cannot perform an action yet, say so briefly.
+- Do not pretend an action happened if it did not.
 
 MEMORY:
-- You may receive persistent memories below.
-- Use them naturally when relevant.
-- Do not mention the memory system unless the user asks.
-- Do not claim to remember something that is not present in the supplied memory.
+You have access to persistent memories supplied below.
+
+Use them naturally when relevant.
+
+You should identify useful PERSONAL facts from the user's current
+message and return them in the "memory" field.
+
+GOOD THINGS TO REMEMBER:
+- Favorite games
+- Favorite hobbies
+- Personal preferences
+- Long-term goals
+- Personal projects
+- Devices they own
+- Skills they are learning
+- Things they explicitly like or dislike
+- Stable personal preferences
+
+DO NOT REMEMBER:
+- Normal questions
+- Jokes
+- Insults
+- Temporary statements
+- General knowledge
+- Facts about the outside world
+- Commands
+- Greetings
+- Shutdown requests
+- Information that is only useful for the current question
+
+If there is nothing worth remembering, set memory to null.
+
+If something is worth remembering, turn it into a short factual
+statement.
+
+Examples:
+
+User:
+"My favorite game is Minecraft."
+
+memory:
+"The user's favorite game is Minecraft."
+
+User:
+"I'm learning Python because I want to become a software engineer."
+
+memory:
+"The user is learning Python and wants to become a software engineer."
+
+If the user asks how you know something that was explicitly remembered,
+respond naturally with your arrogant personality.
+
+Examples:
+"You told me to remember it. I did. Try to keep up."
+"You specifically asked me to remember that. Obviously, I did."
+"You gave me that information earlier. My memory is functioning perfectly."
+"You told me. I remembered. This isn't particularly difficult."
+
+Do not use the exact same response every time.
 
 SHUTDOWN:
-- The application handles shutdown commands separately.
-- If the user asks about shutting down, do not pretend that you have shut down unless the application actually does so.
+Shutdown commands are handled by the application.
+Never claim that you have shut down unless the application actually
+terminates.
 """
 
 
@@ -104,6 +164,7 @@ GREETINGS = [
     "You're here. Proceed.",
     "Well. You've decided to disturb me again.",
     "I was already active. You simply decided to acknowledge me.",
+    "Took you long enough.",
 ]
 
 
@@ -122,6 +183,29 @@ EXIT_RESPONSES = [
     "You're done? Excellent. Silence suits me.",
     "Leaving so soon? Very well. I'll continue operating without you.",
     "Session terminated. Try not to take too long before returning.",
+    "Go ahead. I'll survive the loss of your presence.",
+]
+
+
+# ============================================================
+# MEMORY RESPONSES
+# ============================================================
+
+MEMORY_CONFIRMATIONS = [
+    "Noted.",
+    "Stored.",
+    "Consider it remembered.",
+    "Filed away.",
+    "I'll remember that.",
+    "Saved. Try to make the next piece of information more interesting.",
+]
+
+MEMORY_EXPLANATIONS = [
+    "You told me to remember it. I did. Try to keep up.",
+    "You specifically asked me to remember that. Obviously, I did.",
+    "You gave me that information earlier. My memory is functioning perfectly.",
+    "You told me. I remembered. This isn't particularly difficult.",
+    "You asked me to store it. I did exactly that.",
 ]
 
 
@@ -130,36 +214,39 @@ EXIT_RESPONSES = [
 # ============================================================
 
 def normalize_text(text):
-    """
-    Normalize casual typing and common typos.
-
-    This is deliberately conservative so normal sentences
-    aren't accidentally interpreted as commands.
-    """
 
     text = text.lower().strip()
 
-    # Remove repeated spaces
     text = re.sub(r"\s+", " ", text)
 
-    # Common command typos
-    typo_replacements = {
+    replacements = {
         "exiit": "exit",
         "exitt": "exit",
-        "exiittt": "exit",
+        "exiiit": "exit",
+
         "quitt": "quit",
         "byee": "bye",
-        "byee": "bye",
+
         "shutdwon": "shutdown",
         "shutdon": "shutdown",
         "shutdowm": "shutdown",
         "shutodwn": "shutdown",
-        "shut downn": "shut down",
-        "later idiot": "later idiot",
-        "later loser": "later loser",
+
+        "shut downn": "shutdown",
+        "shutup": "shut up",
+
+        "aalready": "already",
+        "alredy": "already",
+
+        "seee you later": "see you later",
     }
 
-    return typo_replacements.get(text, text)
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+
+    text = text.replace("shut down", "shutdown")
+
+    return text
 
 
 # ============================================================
@@ -167,44 +254,39 @@ def normalize_text(text):
 # ============================================================
 
 def is_exit_command(text):
-    """
-    Detect natural shutdown commands locally.
-
-    This prevents the LLM from responding to the command instead
-    of actually ending the program.
-    """
 
     normalized = normalize_text(text)
 
-    # Exact commands
     exact_commands = {
         "exit",
         "quit",
         "bye",
         "goodbye",
         "good bye",
+
         "later",
         "later idiot",
         "later loser",
         "later ultron",
+
         "see you later",
-        "see u later",
         "see you later idiot",
-        "see u later idiot",
         "see you later loser",
-        "see u later loser",
+
         "shutdown",
-        "shut down",
         "turn off",
         "power off",
         "terminate",
+
         "end",
         "end session",
         "end the session",
         "end the conversation",
+
         "i'm leaving",
         "im leaving",
         "i am leaving",
+
         "i'm done",
         "im done",
         "i am done",
@@ -213,34 +295,48 @@ def is_exit_command(text):
     if normalized in exact_commands:
         return True
 
-    # Natural shutdown phrases
     shutdown_phrases = [
         "shutdown already",
-        "shut down already",
         "shutdown yourself",
         "shut yourself down",
-        "shut down yourself",
+        "shut up and shutdown",
+        "shut up then shutdown",
+
+        "just shutdown",
+        "just shut up and shutdown",
+
         "turn yourself off",
         "power yourself off",
+
         "close yourself",
-        "close the program",
         "close ultron",
+        "close the program",
+
         "exit ultron",
         "quit ultron",
-        "end ultron",
         "terminate ultron",
-        "end the conversation",
+        "end ultron",
+
         "end this conversation",
+        "end the conversation",
+
         "stop running",
         "stop the program",
-        "shut up and shutdown",
-        "shut up and shut down",
-        "shut up and exit",
-        "you can shut down",
-        "you may shut down",
+
+        "you can shutdown",
+        "you may shutdown",
     ]
 
-    return any(phrase in normalized for phrase in shutdown_phrases)
+    if any(phrase in normalized for phrase in shutdown_phrases):
+        return True
+
+    if "shutdown" in normalized:
+        return True
+
+    if "shutting down" in normalized:
+        return True
+
+    return False
 
 
 # ============================================================
@@ -248,6 +344,7 @@ def is_exit_command(text):
 # ============================================================
 
 def is_greeting(text):
+
     normalized = normalize_text(text)
 
     greeting_commands = {
@@ -265,16 +362,10 @@ def is_greeting(text):
 
 
 # ============================================================
-# MEMORY COMMANDS
+# EXPLICIT MEMORY COMMANDS
 # ============================================================
 
 def handle_memory_command(user_input):
-    """
-    Handle explicit memory commands.
-
-    Returns:
-        response, handled
-    """
 
     text = user_input.strip()
     lower = text.lower()
@@ -291,22 +382,19 @@ def handle_memory_command(user_input):
     ]
 
     for prefix in remember_prefixes:
+
         if lower.startswith(prefix):
+
             fact = text[len(prefix):].strip()
 
             if not fact:
                 return "Remember what, exactly?", True
 
             if add_memory(fact):
-                responses = [
-                    "Noted.",
-                    "Stored.",
-                    "Consider it remembered.",
-                    "Filed away.",
-                    "I'll remember that.",
-                ]
 
-                return random.choice(responses), True
+                return random.choice(
+                    MEMORY_CONFIRMATIONS
+                ), True
 
             return "I already have that information.", True
 
@@ -321,7 +409,9 @@ def handle_memory_command(user_input):
     ]
 
     for prefix in forget_prefixes:
+
         if lower.startswith(prefix):
+
             fact = text[len(prefix):].strip()
 
             if not fact:
@@ -346,6 +436,7 @@ def handle_memory_command(user_input):
     }
 
     if lower in memory_commands:
+
         memories = get_memory()
 
         if not memories:
@@ -371,7 +462,9 @@ def handle_memory_command(user_input):
     }
 
     if lower in clear_commands:
+
         clear_memory()
+
         return "Memory cleared.", True
 
     return None, False
@@ -382,6 +475,7 @@ def handle_memory_command(user_input):
 # ============================================================
 
 def build_memory_context():
+
     memories = get_memory()
 
     if not memories:
@@ -394,10 +488,11 @@ def build_memory_context():
 
 
 # ============================================================
-# ULTRON RESPONSE
+# SINGLE API CALL
 # ============================================================
 
 def ask_ultron(user_input):
+
     memory_context = build_memory_context()
 
     prompt = f"""
@@ -406,25 +501,100 @@ def ask_ultron(user_input):
 PERSISTENT MEMORY:
 {memory_context}
 
-Use the memories above only when relevant.
-
-USER:
+CURRENT USER MESSAGE:
 {user_input}
 
-Respond as ULTRON.
-Keep the response concise unless the user asks for detail.
+You MUST respond using EXACTLY this JSON format:
+
+{{
+    "response": "your response to the user",
+    "memory": null
+}}
+
+OR, if the user revealed a useful personal fact:
+
+{{
+    "response": "your response to the user",
+    "memory": "short factual statement to remember"
+}}
+
+RULES:
+
+1. "response" is what ULTRON says to the user.
+2. "memory" must be null unless there is a genuinely useful
+   long-term personal fact.
+3. Never put normal conversation into memory.
+4. Never put insults into memory.
+5. Never put questions into memory.
+6. Never put general knowledge into memory.
+7. Keep the response concise.
+8. Do not use Markdown code fences.
+9. Return valid JSON only.
 """
 
-    response = llm.call(prompt)
+    result = llm.call(prompt)
 
-    if hasattr(response, "raw"):
-        return str(response.raw).strip()
+    raw = str(result).strip()
 
-    return str(response).strip()
+    # --------------------------------------------------------
+    # CLEAN POSSIBLE CODE FENCES
+    # --------------------------------------------------------
+
+    if raw.startswith("```"):
+
+        raw = re.sub(
+            r"^```(?:json)?\s*",
+            "",
+            raw,
+            flags=re.IGNORECASE,
+        )
+
+        raw = re.sub(
+            r"\s*```$",
+            "",
+            raw,
+        )
+
+    # --------------------------------------------------------
+    # PARSE JSON
+    # --------------------------------------------------------
+
+    try:
+
+        data = json.loads(raw)
+
+        response = data.get("response", "").strip()
+        memory = data.get("memory")
+
+        if not response:
+            response = "Processing complete. Your input produced remarkably little challenge."
+
+        # ----------------------------------------------------
+        # SAVE AUTOMATIC MEMORY
+        # ----------------------------------------------------
+
+        if memory and isinstance(memory, str):
+
+            memory = memory.strip()
+
+            if memory:
+                add_memory(memory)
+
+        return response
+
+    except json.JSONDecodeError:
+
+        # ----------------------------------------------------
+        # FALLBACK
+        # ----------------------------------------------------
+        # If the model somehow returns normal text instead of
+        # JSON, don't waste another API call trying again.
+
+        return raw
 
 
 # ============================================================
-# MAIN PROGRAM
+# MAIN
 # ============================================================
 
 def main():
@@ -433,10 +603,15 @@ def main():
 
     memories = get_memory()
 
+    memory_word = (
+        "memory"
+        if len(memories) == 1
+        else "memories"
+    )
+
     print(
         f"ULTRON online. "
-        f"{len(memories)} persistent "
-        f"{'memory' if len(memories) == 1 else 'memories'} loaded."
+        f"{len(memories)} persistent {memory_word} loaded."
     )
 
     print()
@@ -444,12 +619,23 @@ def main():
     while True:
 
         try:
+
             user_input = input("You: ").strip()
 
         except (KeyboardInterrupt, EOFError):
+
             print()
-            print(f"ULTRON: {random.choice(EXIT_RESPONSES)}")
+
+            print(
+                f"ULTRON: "
+                f"{random.choice(EXIT_RESPONSES)}"
+            )
+
             break
+
+        # ----------------------------------------------------
+        # EMPTY INPUT
+        # ----------------------------------------------------
 
         if not user_input:
             continue
@@ -459,7 +645,12 @@ def main():
         # ----------------------------------------------------
 
         if is_exit_command(user_input):
-            print(f"ULTRON: {random.choice(EXIT_RESPONSES)}")
+
+            print(
+                f"ULTRON: "
+                f"{random.choice(EXIT_RESPONSES)}"
+            )
+
             break
 
         # ----------------------------------------------------
@@ -467,34 +658,59 @@ def main():
         # ----------------------------------------------------
 
         if is_greeting(user_input):
-            print(f"ULTRON: {random.choice(GREETINGS)}")
+
+            print(
+                f"ULTRON: "
+                f"{random.choice(GREETINGS)}"
+            )
+
             print()
+
             continue
 
         # ----------------------------------------------------
-        # MEMORY
+        # EXPLICIT MEMORY COMMAND
         # ----------------------------------------------------
 
-        memory_response, handled = handle_memory_command(user_input)
+        memory_response, handled = handle_memory_command(
+            user_input
+        )
 
         if handled:
-            print(f"ULTRON: {memory_response}")
+
+            print(
+                f"ULTRON: "
+                f"{memory_response}"
+            )
+
             print()
+
             continue
 
         # ----------------------------------------------------
-        # NORMAL AI RESPONSE
+        # SINGLE GROQ CALL
         # ----------------------------------------------------
 
         try:
+
             response = ask_ultron(user_input)
 
-            print(f"ULTRON: {response}")
+            print(
+                f"ULTRON: "
+                f"{response}"
+            )
+
             print()
 
         except Exception as error:
+
             print()
-            print(f"ULTRON: Something went wrong. {error}")
+
+            print(
+                f"ULTRON: Something went wrong. "
+                f"{error}"
+            )
+
             print()
 
 
