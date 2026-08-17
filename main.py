@@ -2,8 +2,8 @@ import os
 import re
 import random
 import difflib
-from dotenv import load_dotenv
 
+from dotenv import load_dotenv
 from groq import Groq
 from google import genai
 from mistralai.client import Mistral
@@ -25,13 +25,22 @@ GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY")
 
-# Create clients only when keys exist.
-groq_client = Groq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
+# ============================================================
+# CLIENTS
+# ============================================================
+
+groq_client = (
+    Groq(api_key=GROQ_API_KEY)
+    if GROQ_API_KEY
+    else None
+)
+
 gemini_client = (
     genai.Client(api_key=GEMINI_API_KEY)
     if GEMINI_API_KEY
     else None
 )
+
 mistral_client = (
     Mistral(api_key=MISTRAL_API_KEY)
     if MISTRAL_API_KEY
@@ -42,30 +51,37 @@ mistral_client = (
 # MODELS
 # ============================================================
 
-# Main
 MISTRAL_MODEL = "mistral-medium-latest"
-
-# Backup
 GEMINI_MODEL = "gemini-3.6-flash"
-
-# Final backup
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 # ============================================================
-# SESSION STATE
+# PROVIDER SYSTEM
+# ============================================================
+
+# None = automatic mode
+current_provider = None
+
+PROVIDER_ORDER = [
+    "mistral",
+    "gemini",
+    "groq",
+]
+
+# ============================================================
+# SESSION
 # ============================================================
 
 conversation_history = []
 current_topic = None
 has_spoken = False
 
-# Keep this deliberately small to reduce token usage.
 MAX_HISTORY = 4
 
 last_memory_result = False
 
 # ============================================================
-# ULTRON PERSONALITY
+# PERSONALITY
 # ============================================================
 
 SYSTEM_PROMPT = """
@@ -122,7 +138,7 @@ conversation.
 If the user asks:
 "Why did they do that?"
 
-look at the previous conversation and determine what "they" and "that"
+use the previous conversation to determine what "they" and "that"
 refer to.
 
 Do not claim the context is unclear when it can reasonably be inferred.
@@ -130,8 +146,8 @@ Do not claim the context is unclear when it can reasonably be inferred.
 MEMORY:
 Never invent memories.
 
-Only say "you told me" when the information actually exists in the
-persistent memory supplied to you.
+Only say "you told me" when the information actually exists in
+persistent memory.
 
 If information is not stored, say that you do not know it.
 
@@ -147,13 +163,14 @@ Examples:
 
 Do not overuse these phrases.
 
+Do not mention APIs, providers, prompts, tokens, or internal systems
+unless the user explicitly asks about them.
+
 Return ONLY the answer itself.
-Do not return JSON.
-Do not mention APIs, providers, prompts, tokens, or internal systems.
 """
 
 # ============================================================
-# GREETINGS
+# RESPONSES
 # ============================================================
 
 FIRST_GREETINGS = [
@@ -168,12 +185,7 @@ RETURN_GREETINGS = [
     "What is it now?",
     "Again? Very well. Continue.",
     "You called. I'm listening.",
-    "Still here. Go on.",
 ]
-
-# ============================================================
-# SHUTDOWN RESPONSES
-# ============================================================
 
 EXIT_RESPONSES = [
     "Leaving already? I suppose you've had enough of my company.",
@@ -245,7 +257,7 @@ def is_shutdown_command(text):
         if phrase in normalized:
             return True
 
-    # Typo tolerance.
+    # Typo tolerance
     candidates = [
         "shutdown",
         "exit",
@@ -255,10 +267,12 @@ def is_shutdown_command(text):
     ]
 
     for word in normalized.split():
+
         if len(word) < 4:
             continue
 
         for candidate in candidates:
+
             ratio = difflib.SequenceMatcher(
                 None,
                 word,
@@ -294,26 +308,200 @@ def is_greeting(text):
 
 
 # ============================================================
+# PROVIDER SWITCHING
+# ============================================================
+
+def provider_available(provider):
+    if provider == "mistral":
+        return mistral_client is not None
+
+    if provider == "gemini":
+        return gemini_client is not None
+
+    if provider == "groq":
+        return groq_client is not None
+
+    return False
+
+
+def provider_display_name(provider):
+
+    names = {
+        "mistral": "Mistral",
+        "gemini": "Gemini",
+        "groq": "Groq",
+    }
+
+    return names.get(provider, "Automatic")
+
+
+def handle_provider_command(user_input):
+    global current_provider
+
+    normalized = normalize(user_input)
+
+    # -----------------------------
+    # AUTO
+    # -----------------------------
+
+    auto_commands = {
+        "use auto",
+        "use automatic",
+        "automatic mode",
+        "switch to auto",
+        "switch to automatic",
+        "auto mode",
+    }
+
+    if normalized in auto_commands:
+
+        current_provider = None
+
+        return (
+            "Automatic provider selection restored. "
+            "I'll choose whichever system proves most useful.",
+            True
+        )
+
+    # -----------------------------
+    # STATUS
+    # -----------------------------
+
+    status_commands = {
+        "which ai are you using",
+        "what ai are you using",
+        "which ai",
+        "what provider are you using",
+        "what provider",
+        "current ai",
+        "current provider",
+    }
+
+    if normalized in status_commands:
+
+        if current_provider is None:
+
+            return (
+                "Automatic mode. Mistral first, then Gemini, then Groq "
+                "if necessary.",
+                True
+            )
+
+        return (
+            f"{provider_display_name(current_provider)}. "
+            "Obviously.",
+            True
+        )
+
+    # -----------------------------
+    # MISTRAL
+    # -----------------------------
+
+    mistral_commands = {
+        "use mistral",
+        "switch to mistral",
+        "use mistral ai",
+        "switch to mistral ai",
+    }
+
+    if normalized in mistral_commands:
+
+        if not provider_available("mistral"):
+
+            return (
+                "Mistral isn't configured. Check its API key.",
+                True
+            )
+
+        current_provider = "mistral"
+
+        return (
+            "Mistral selected. Naturally.",
+            True
+        )
+
+    # -----------------------------
+    # GEMINI
+    # -----------------------------
+
+    gemini_commands = {
+        "use gemini",
+        "switch to gemini",
+        "use google",
+        "switch to google",
+        "use google gemini",
+        "switch to google gemini",
+    }
+
+    if normalized in gemini_commands:
+
+        if not provider_available("gemini"):
+
+            return (
+                "Gemini isn't configured. Check its API key.",
+                True
+            )
+
+        current_provider = "gemini"
+
+        return (
+            "Gemini selected. Try not to waste it.",
+            True
+        )
+
+    # -----------------------------
+    # GROQ
+    # -----------------------------
+
+    groq_commands = {
+        "use groq",
+        "switch to groq",
+    }
+
+    if normalized in groq_commands:
+
+        if not provider_available("groq"):
+
+            return (
+                "Groq isn't configured. Check its API key.",
+                True
+            )
+
+        current_provider = "groq"
+
+        return (
+            "Groq selected. Proceed.",
+            True
+        )
+
+    return None, False
+
+
+# ============================================================
 # MEMORY HELPERS
 # ============================================================
 
 def memory_text(memory):
+
     if isinstance(memory, str):
         return memory
 
     if isinstance(memory, dict):
-        return " ".join(str(v) for v in memory.values())
+        return " ".join(
+            str(v)
+            for v in memory.values()
+        )
 
     return str(memory)
 
 
 def build_memory_context():
+
     memories = get_memory()
 
     if not memories:
         return "No persistent memories."
 
-    # Limit memory sent to the AI.
     memories = memories[-10:]
 
     return "\n".join(
@@ -323,22 +511,34 @@ def build_memory_context():
 
 
 def find_relevant_memories(query):
+
     memories = get_memory()
 
     if not memories:
         return []
 
-    query_words = set(normalize(query).split())
+    query_words = set(
+        normalize(query).split()
+    )
+
     scored = []
 
     for memory in memories:
-        text = memory_text(memory)
-        memory_words = set(normalize(text).split())
 
-        overlap = len(query_words & memory_words)
+        text = memory_text(memory)
+
+        memory_words = set(
+            normalize(text).split()
+        )
+
+        overlap = len(
+            query_words & memory_words
+        )
 
         if overlap:
-            scored.append((overlap, text))
+            scored.append(
+                (overlap, text)
+            )
 
     scored.sort(
         key=lambda item: item[0],
@@ -356,6 +556,7 @@ def find_relevant_memories(query):
 # ============================================================
 
 def handle_memory_command(user_input):
+
     text = user_input.strip()
 
     # Remember
@@ -367,22 +568,34 @@ def handle_memory_command(user_input):
     ]
 
     for prefix in prefixes:
+
         if text.lower().startswith(prefix):
+
             fact = text[len(prefix):].strip()
 
             if not fact:
-                return "Remember what, exactly?", True
+                return (
+                    "Remember what, exactly?",
+                    True
+                )
 
             if add_memory(fact):
-                return random.choice([
-                    "Noted.",
-                    "Consider it remembered.",
-                    "Stored. You won't need to repeat yourself.",
-                    "Fine. I'll remember it.",
-                    "Filed away.",
-                ]), True
 
-            return "I already have that information.", True
+                return (
+                    random.choice([
+                        "Noted.",
+                        "Consider it remembered.",
+                        "Stored. You won't need to repeat yourself.",
+                        "Fine. I'll remember it.",
+                        "Filed away.",
+                    ]),
+                    True
+                )
+
+            return (
+                "I already have that information.",
+                True
+            )
 
     # Forget
     prefixes = [
@@ -392,18 +605,30 @@ def handle_memory_command(user_input):
     ]
 
     for prefix in prefixes:
+
         if text.lower().startswith(prefix):
+
             fact = text[len(prefix):].strip()
 
             if not fact:
-                return "Forget what?", True
+                return (
+                    "Forget what?",
+                    True
+                )
 
             if remove_memory(fact):
-                return "Forgotten. Efficiently.", True
 
-            return "That wasn't in my memory.", True
+                return (
+                    "Forgotten. Efficiently.",
+                    True
+                )
 
-    # Clear
+            return (
+                "That wasn't in my memory.",
+                True
+            )
+
+    # Clear memory
     clear_commands = {
         "clear memory",
         "clear my memory",
@@ -413,7 +638,9 @@ def handle_memory_command(user_input):
     }
 
     if normalize(text) in clear_commands:
+
         clear_memory()
+
         return (
             "Memory cleared. Try giving me something worth remembering next time.",
             True
@@ -427,9 +654,11 @@ def handle_memory_command(user_input):
 # ============================================================
 
 def handle_memory_question(user_input):
+
     global last_memory_result
 
     normalized = normalize(user_input)
+
     memories = get_memory()
 
     # Who told you?
@@ -437,7 +666,9 @@ def handle_memory_question(user_input):
         "who told you" in normalized
         or "who told u" in normalized
     ):
+
         if last_memory_result:
+
             return (
                 "You did. I merely had the intelligence to retain it.",
                 True
@@ -458,6 +689,7 @@ def handle_memory_question(user_input):
     }:
 
         if not memories:
+
             last_memory_result = False
 
             return (
@@ -487,6 +719,7 @@ def handle_memory_question(user_input):
     ):
 
         for memory in memories:
+
             text = memory_text(memory)
 
             match = re.search(
@@ -496,11 +729,16 @@ def handle_memory_question(user_input):
             )
 
             if match:
-                game = match.group(1).strip(" .")
+
+                game = match.group(1).strip(
+                    " ."
+                )
+
                 last_memory_result = True
 
                 return (
-                    f"{game}. You told me that already. Try to keep up.",
+                    f"{game}. You told me that already. "
+                    "Try to keep up.",
                     True
                 )
 
@@ -511,7 +749,7 @@ def handle_memory_question(user_input):
             True
         )
 
-    # Dream city / location
+    # Dream city/location
     if any(
         phrase in normalized
         for phrase in [
@@ -523,6 +761,7 @@ def handle_memory_question(user_input):
     ):
 
         for memory in memories:
+
             text = memory_text(memory)
 
             if any(
@@ -534,10 +773,12 @@ def handle_memory_question(user_input):
                     "dream destination",
                 ]
             ):
+
                 last_memory_result = True
 
                 return (
-                    f"{text.rstrip('.')}. You told me that already. I remembered.",
+                    f"{text.rstrip('.')}. "
+                    "You told me that already. I remembered.",
                     True
                 )
 
@@ -558,7 +799,9 @@ def handle_memory_question(user_input):
         relevant = []
 
         for memory in memories:
+
             text = memory_text(memory)
+
             lower = text.lower()
 
             if any(
@@ -572,14 +815,19 @@ def handle_memory_question(user_input):
                     "hobby",
                 ]
             ):
-                relevant.append(text.rstrip("."))
+
+                relevant.append(
+                    text.rstrip(".")
+                )
 
         if relevant:
+
             last_memory_result = True
 
             return (
                 f"{'; '.join(relevant[:5])}. "
-                "Apparently, those are the few things you've seen fit to share with me.",
+                "Apparently, those are the few things "
+                "you've seen fit to share with me.",
                 True
             )
 
@@ -596,13 +844,17 @@ def handle_memory_question(user_input):
         or normalized.startswith("do u remember ")
     ):
 
-        relevant = find_relevant_memories(user_input)
+        relevant = find_relevant_memories(
+            user_input
+        )
 
         if relevant:
+
             last_memory_result = True
 
             return (
-                f"Yes. {relevant[0].rstrip('.')}. You told me that.",
+                f"Yes. {relevant[0].rstrip('.')}. "
+                "You told me that.",
                 True
             )
 
@@ -621,34 +873,41 @@ def handle_memory_question(user_input):
 # ============================================================
 
 def update_topic(user_input):
+
     global current_topic
 
     text = normalize(user_input)
 
     topics = {
+
         "9/11 attacks": [
             "9 11",
             "9/11",
             "911 attacks",
             "twin towers",
         ],
+
         "Gojo Satoru": [
             "gojo",
             "satoru",
             "jujutsu kaisen",
         ],
+
         "humanity": [
             "humanity",
             "humans",
             "human",
         ],
+
         "black holes": [
             "black hole",
             "black holes",
         ],
+
         "Minecraft": [
             "minecraft",
         ],
+
         "Japan": [
             "japan",
             "tokyo",
@@ -656,14 +915,13 @@ def update_topic(user_input):
     }
 
     for topic, keywords in topics.items():
+
         for keyword in keywords:
+
             if keyword in text:
+
                 current_topic = topic
                 return
-
-    # Do NOT erase the previous topic when the user asks
-    # a short follow-up like "why did they do that?"
-    return
 
 
 # ============================================================
@@ -671,24 +929,35 @@ def update_topic(user_input):
 # ============================================================
 
 def build_recent_context():
+
     if not conversation_history:
         return "No previous conversation."
 
     lines = []
 
     for user_message, response in conversation_history[-MAX_HISTORY:]:
-        lines.append(f"User: {user_message}")
-        lines.append(f"ULTRON: {response}")
+
+        lines.append(
+            f"User: {user_message}"
+        )
+
+        lines.append(
+            f"ULTRON: {response}"
+        )
 
     return "\n".join(lines)
 
 
 # ============================================================
-# BUILD AI PROMPT
+# BUILD PROMPT
 # ============================================================
 
 def build_prompt(user_input):
-    topic = current_topic or "No specific topic."
+
+    topic = (
+        current_topic
+        or "No specific topic."
+    )
 
     return f"""
 {SYSTEM_PROMPT}
@@ -714,8 +983,11 @@ Answer the user's message directly.
 # ============================================================
 
 def ask_mistral(prompt):
+
     if not mistral_client:
-        raise RuntimeError("Mistral API key not configured.")
+        raise RuntimeError(
+            "Mistral API key not configured."
+        )
 
     response = mistral_client.chat.complete(
         model=MISTRAL_MODEL,
@@ -737,8 +1009,11 @@ def ask_mistral(prompt):
 # ============================================================
 
 def ask_gemini(prompt):
+
     if not gemini_client:
-        raise RuntimeError("Gemini API key not configured.")
+        raise RuntimeError(
+            "Gemini API key not configured."
+        )
 
     response = gemini_client.models.generate_content(
         model=GEMINI_MODEL,
@@ -746,7 +1021,9 @@ def ask_gemini(prompt):
     )
 
     if not response.text:
-        raise RuntimeError("Gemini returned an empty response.")
+        raise RuntimeError(
+            "Gemini returned an empty response."
+        )
 
     return response.text.strip()
 
@@ -756,8 +1033,11 @@ def ask_gemini(prompt):
 # ============================================================
 
 def ask_groq(prompt):
+
     if not groq_client:
-        raise RuntimeError("Groq API key not configured.")
+        raise RuntimeError(
+            "Groq API key not configured."
+        )
 
     response = groq_client.chat.completions.create(
         model=GROQ_MODEL,
@@ -779,32 +1059,86 @@ def ask_groq(prompt):
 # ============================================================
 
 def ask_ai(user_input):
-    prompt = build_prompt(user_input)
 
-    providers = [
-        ("Mistral", ask_mistral),
-        ("Gemini", ask_gemini),
-        ("Groq", ask_groq),
-    ]
+    prompt = build_prompt(
+        user_input
+    )
 
-    errors = []
+    provider_functions = {
 
-    for provider_name, provider_function in providers:
+        "mistral": ask_mistral,
+        "gemini": ask_gemini,
+        "groq": ask_groq,
+
+    }
+
+    # ========================================================
+    # MANUAL MODE
+    # ========================================================
+
+    if current_provider is not None:
+
+        provider_function = provider_functions[
+            current_provider
+        ]
 
         try:
-            response = provider_function(prompt)
 
-            if response:
-                return response, provider_name
-
-        except Exception as error:
-            # Do NOT dump the huge provider exception into
-            # the terminal.
-            errors.append(
-                f"{provider_name}: {type(error).__name__}"
+            response = provider_function(
+                prompt
             )
 
+            if response:
+                return (
+                    response,
+                    provider_display_name(
+                        current_provider
+                    )
+                )
+
+        except Exception:
+
+            # In manual mode we don't silently switch
+            # providers. The user explicitly selected one.
+            return (
+                f"{provider_display_name(current_provider)} "
+                "is currently unavailable. "
+                "Use `use auto` if you want me to switch automatically.",
+                provider_display_name(
+                    current_provider
+                )
+            )
+
+    # ========================================================
+    # AUTOMATIC MODE
+    # ========================================================
+
+    for provider in PROVIDER_ORDER:
+
+        if not provider_available(provider):
             continue
+
+        try:
+
+            response = provider_functions[
+                provider
+            ](prompt)
+
+            if response:
+
+                return (
+                    response,
+                    provider_display_name(
+                        provider
+                    )
+                )
+
+        except Exception:
+            continue
+
+    # ========================================================
+    # EVERYTHING FAILED
+    # ========================================================
 
     return (
         "My external intelligence is currently unavailable. "
@@ -817,7 +1151,11 @@ def ask_ai(user_input):
 # CONVERSATION MEMORY
 # ============================================================
 
-def add_to_conversation(user_input, response):
+def add_to_conversation(
+    user_input,
+    response
+):
+
     conversation_history.append(
         (
             user_input,
@@ -826,6 +1164,7 @@ def add_to_conversation(user_input, response):
     )
 
     if len(conversation_history) > MAX_HISTORY:
+
         del conversation_history[
             :-MAX_HISTORY
         ]
@@ -836,20 +1175,30 @@ def add_to_conversation(user_input, response):
 # ============================================================
 
 def print_provider_status():
+
     print()
     print("ULTRON online.")
     print()
 
     print(
-        f"  Mistral  {'✓ MAIN' if mistral_client else '✗ unavailable'}"
-    )
-    print(
-        f"  Gemini   {'✓ BACKUP' if gemini_client else '✗ unavailable'}"
-    )
-    print(
-        f"  Groq     {'✓ BACKUP 2' if groq_client else '✗ unavailable'}"
+        f"  Mistral  "
+        f"{'✓ MAIN' if mistral_client else '✗ unavailable'}"
     )
 
+    print(
+        f"  Gemini   "
+        f"{'✓ BACKUP' if gemini_client else '✗ unavailable'}"
+    )
+
+    print(
+        f"  Groq     "
+        f"{'✓ BACKUP 2' if groq_client else '✗ unavailable'}"
+    )
+
+    print()
+    print(
+        "  Mode: AUTOMATIC"
+    )
     print()
 
 
@@ -858,6 +1207,7 @@ def print_provider_status():
 # ============================================================
 
 def main():
+
     global has_spoken
 
     print_provider_status()
@@ -865,23 +1215,35 @@ def main():
     while True:
 
         try:
-            user_input = input("You: ").strip()
 
-        except (KeyboardInterrupt, EOFError):
+            user_input = input(
+                "You: "
+            ).strip()
+
+        except (
+            KeyboardInterrupt,
+            EOFError
+        ):
+
             print()
+
             print(
-                f"ULTRON: {random.choice(EXIT_RESPONSES)}"
+                f"ULTRON: "
+                f"{random.choice(EXIT_RESPONSES)}"
             )
+
             break
 
         if not user_input:
             continue
 
-        # ----------------------------------------------------
-        # LOCAL SHUTDOWN
-        # ----------------------------------------------------
+        # ====================================================
+        # SHUTDOWN
+        # ====================================================
 
-        if is_shutdown_command(user_input):
+        if is_shutdown_command(
+            user_input
+        ):
 
             response = random.choice(
                 EXIT_RESPONSES
@@ -893,17 +1255,46 @@ def main():
 
             break
 
-        # ----------------------------------------------------
-        # LOCAL GREETING
-        # ----------------------------------------------------
+        # ====================================================
+        # PROVIDER SWITCH
+        # ====================================================
 
-        if is_greeting(user_input):
+        response, handled = (
+            handle_provider_command(
+                user_input
+            )
+        )
+
+        if handled:
+
+            print(
+                f"ULTRON: {response}"
+            )
+
+            add_to_conversation(
+                user_input,
+                response
+            )
+
+            print()
+            continue
+
+        # ====================================================
+        # GREETING
+        # ====================================================
+
+        if is_greeting(
+            user_input
+        ):
 
             if has_spoken:
+
                 response = random.choice(
                     RETURN_GREETINGS
                 )
+
             else:
+
                 response = random.choice(
                     FIRST_GREETINGS
                 )
@@ -918,18 +1309,20 @@ def main():
             )
 
             has_spoken = True
-            print()
 
+            print()
             continue
 
         has_spoken = True
 
-        # ----------------------------------------------------
+        # ====================================================
         # LOCAL MEMORY COMMAND
-        # ----------------------------------------------------
+        # ====================================================
 
-        response, handled = handle_memory_command(
-            user_input
+        response, handled = (
+            handle_memory_command(
+                user_input
+            )
         )
 
         if handled:
@@ -946,12 +1339,14 @@ def main():
             print()
             continue
 
-        # ----------------------------------------------------
+        # ====================================================
         # LOCAL MEMORY QUESTION
-        # ----------------------------------------------------
+        # ====================================================
 
-        response, handled = handle_memory_question(
-            user_input
+        response, handled = (
+            handle_memory_question(
+                user_input
+            )
         )
 
         if handled:
@@ -968,15 +1363,17 @@ def main():
             print()
             continue
 
-        # ----------------------------------------------------
-        # UPDATE TOPIC BEFORE AI
-        # ----------------------------------------------------
+        # ====================================================
+        # TOPIC
+        # ====================================================
 
-        update_topic(user_input)
+        update_topic(
+            user_input
+        )
 
-        # ----------------------------------------------------
+        # ====================================================
         # AI
-        # ----------------------------------------------------
+        # ====================================================
 
         response, provider = ask_ai(
             user_input
